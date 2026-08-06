@@ -19,13 +19,25 @@ fs.writeFileSync('extension/robux-tracker.js', header + body);
 
 // keep the manifest version in step with the userscript
 const version = (src.match(/@version\s+([\d.]+)/) || [])[1];
-if (version) {
-  const mp = 'extension/manifest.json';
-  const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
-  if (m.version !== version) {
-    m.version = version;
-    fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n');
-    console.log('manifest version -> ' + version);
+const mp = 'extension/manifest.json';
+const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
+if (version && m.version !== version) {
+  m.version = version;
+  fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n');
+  console.log('manifest version -> ' + version);
+}
+
+// Chrome Web Store limits, enforced at upload time. Catching them here beats
+// finding out after a failed upload.
+const LIMITS = { name: 75, short_name: 12, description: 132 };
+let bad = false;
+for (const [field, max] of Object.entries(LIMITS)) {
+  const v = m[field];
+  if (v && v.length > max) {
+    console.error(`ERROR: manifest "${field}" is ${v.length} chars, max is ${max}`);
+    bad = true;
   }
 }
+if (bad) process.exit(1);
+
 console.log('built extension/robux-tracker.js');

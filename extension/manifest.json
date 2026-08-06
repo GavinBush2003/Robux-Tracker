@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Robux Tracker — see where your Robux went",
-  "short_name": "Robux Tracker",
+  "short_name": "RobuxTracker",
   "version": "5.1.0",
-  "description": "Breaks your own Roblox purchase history down per game, per category and per item, with local pricing and a spending timeline. Unofficial.",
+  "description": "See where your Robux went — your own purchase history, broken down per game and per item, in your currency. Unofficial.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
