@@ -1,6 +1,6 @@
-This extension shows users a breakdown of their own Roblox spending, so it must read that data from Roblox's own APIs while the user is signed in.
+The extension shows users a breakdown of their own Roblox spending, so it reads that data from Roblox's own APIs while the user is signed in.
 
-economy.roblox.com - reads the signed-in user's own transaction history, the same data shown on their My Transactions page. This is the extension's core function.
+economy.roblox.com - reads the user's own transaction history, the same data shown on their My Transactions page. This is the extension's core function.
 
 users.roblox.com - confirms which account is signed in, so cached results are never mixed between two accounts.
 
@@ -8,6 +8,6 @@ thumbnails.roblox.com - fetches game icons so each game is recognisable in the l
 
 apis.roblox.com - resolves a place ID to its universe ID so purchases group under the correct game.
 
-www.roblox.com (content script) - adds the panel and its sidebar entry to the Roblox interface, and reads the Robux package prices shown on the user's own Buy Robux page so amounts can be displayed in their local currency.
+www.roblox.com (content script) - adds the panel and sidebar entry to the Roblox interface, and reads the Robux package prices on the user's own Buy Robux page so amounts show in their local currency.
 
-Every request is a read using the user's existing session. Nothing is written to the account, no data is transmitted off the device, and all results are stored in local storage only.
+Every request is a read using the user's existing session. Nothing is written to the account, no data leaves the device, and all results are stored in local storage only.
