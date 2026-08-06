@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Robux Tracker — see where your Robux went",
+  "short_name": "Robux Tracker",
+  "version": "5.1.0",
+  "description": "Breaks your own Roblox purchase history down per game, per category and per item, with local pricing and a spending timeline. Unofficial.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.roblox.com/*",
+        "https://web.roblox.com/*"
+      ],
+      "js": ["robux-tracker.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://economy.roblox.com/*",
+    "https://users.roblox.com/*",
+    "https://apis.roblox.com/*",
+    "https://thumbnails.roblox.com/*"
+  ]
+}
