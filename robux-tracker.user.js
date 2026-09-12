@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Robux Tracker — see where your Robux went
 // @namespace    robuxtracker.app
-// @version      6.1.0
+// @version      7.0.0
 // @description  See where your Robux actually went. Reads your own purchase history and breaks it down per game, per category and per item ("Gifting VIP x44"), with real local pricing, a spending timeline and CSV/JSON export. Unofficial; not affiliated with Roblox Corporation.
 // @author       Gavin
 // @match        https://www.roblox.com/*
@@ -24,7 +24,7 @@
   // Every version has used this same guard, so an older copy still enabled in
   // Tampermonkey wins the race and the newer one silently does nothing. Say so
   // out loud instead of looking like the update didn't apply.
-  const VERSION = '6.1.0';
+  const VERSION = '7.0.0';
   if (window.__rstProLoaded) {
     try {
       console.warn(`[Robux Tracker] v${VERSION} did not start — v${window.__rstProLoaded} ` +
@@ -229,6 +229,9 @@
     curSymbol: '€',
     curPer1000: 9.99,
     theme: 'auto',
+    accent: 0,
+    density: 'cozy',
+    home: 'overview',
     types: ['Purchase', 'CurrencyPurchase'],
     fabPos: null
   };
@@ -293,7 +296,8 @@
   };
 
   const ui = {
-    open: false, tab: 'games', gameKey: null, q: '', sort: 'total', range: 'all',
+    open: false, tab: (store.get('cfg', {}) || {}).home || 'overview',
+    cmdQ: '', cmdSel: 0, cmdItems: [], gameKey: null, q: '', sort: 'total', range: 'all',
     year: null, cat: null,
     expanded: new Set(),
     iconCache: store.get('icons', {})
@@ -450,8 +454,12 @@
     const d = tx.details || {};
     const place = d.place || {};
     const isRobux = tx.currency && tx.currency.type === 'Robux';
+    const raw = isRobux ? (tx.currency.amount || 0) : 0;
     return {
       id: tx.id,
+      // Roblox signs the amount: negative leaves your balance, positive arrives.
+      // Reading direction from the row beats guessing it from the type name.
+      dir: raw < 0 ? 'out' : 'in',
       idHash: tx.idHash || null,
       txType: txType,
       created: tx.created,
@@ -776,8 +784,13 @@
     if (s === null) return true;
     return r.created && new Date(r.created).getTime() >= s;
   }
-  const spendRecords = () => state.records.filter(r => typeInfo(r.txType).kind === 'out' && inRange(r));
-  const incomeRecords = () => state.records.filter(r => typeInfo(r.txType).kind === 'in' && inRange(r));
+  // Records cached before v7 have no direction stored; fall back to the type table.
+  function dirOf(r) {
+    if (r.dir === 'out' || r.dir === 'in') return r.dir;
+    return typeInfo(r.txType).kind === 'out' ? 'out' : 'in';
+  }
+  const spendRecords = () => state.records.filter(r => dirOf(r) === 'out' && inRange(r));
+  const incomeRecords = () => state.records.filter(r => dirOf(r) === 'in' && inRange(r));
 
   function sellerUniverseMap(records) {
     const m = new Map();
@@ -1227,6 +1240,113 @@
   }
 
   /* ================================================================== *
+   * Every transaction type the Transactions page exposes
+   *
+   * The site's dropdown is a friendly rename of the API's transactionType
+   * values. Rather than trust a hardcoded map, we probe each candidate once
+   * and keep whatever actually answers — the same self-checking approach the
+   * rest of this script uses. Direction (money in vs out) is read from the
+   * sign Roblox puts on the amount, not guessed from the name.
+   * ================================================================== */
+  const CANDIDATE_TYPES = [
+    { id: 'Purchase', label: 'Purchases', hint: 'Game passes, dev products, catalog items' },
+    { id: 'CurrencyPurchase', label: 'Robux purchases', hint: 'Robux you bought with real money' },
+    { id: 'PremiumStipend', label: 'Robux stipends', hint: 'Your monthly Premium payout' },
+    { id: 'Sale', label: 'Sales of goods', hint: 'Robux others spent on your items' },
+    { id: 'TradeRobux', label: 'Earnings from trades', hint: 'Robux gained or lost trading' },
+    { id: 'GroupPayout', label: 'Community payouts', hint: 'Group payouts you received' },
+    { id: 'Commission', label: 'Commissions', hint: 'Affiliate commission entries' },
+    { id: 'AffiliateSale', label: 'Affiliate sales', hint: 'Referral earnings' },
+    { id: 'AdSpend', label: 'Sponsored ad spend', hint: 'Robux spent advertising' },
+    { id: 'EngagementPayout', label: 'Creator rewards', hint: 'Daily engagement-based payouts' },
+    { id: 'GroupEngagementPayout', label: 'Group creator rewards', hint: 'Engagement payouts to a group' },
+    { id: 'CSAdjustment', label: 'Roblox adjustments', hint: 'Corrections made by Roblox' },
+    { id: 'IndividualToGroup', label: 'Robux transfers out', hint: 'Robux you sent to a group' },
+    { id: 'GroupToIndividual', label: 'Robux transfers in', hint: 'Robux a group sent you' },
+    { id: 'PendingRobux', label: 'Pending Robux', hint: 'Sales still clearing' },
+    { id: 'PublishingAdvanceRebates', label: 'Publishing rebates', hint: 'Advance rebates' },
+    { id: 'AdsRevsharePayout', label: 'Ads revenue share', hint: 'Immersive ads revenue' },
+    { id: 'SubscriptionsRevshare', label: 'Subscription revenue', hint: 'Creator subscription earnings' }
+  ];
+
+  const discovered = () => store.get('typeProbe', null);
+
+  function knownTypes() {
+    const d = discovered();
+    if (!d) return CANDIDATE_TYPES.filter(t => ['Purchase', 'CurrencyPurchase'].includes(t.id));
+    return CANDIDATE_TYPES.filter(t => d.valid.includes(t.id));
+  }
+
+  function typeMeta(id) {
+    return CANDIDATE_TYPES.find(t => t.id === id) || { id, label: id, hint: '' };
+  }
+
+  // One cheap request per candidate. 400/422 means Roblox doesn't know the
+  // name; anything that parses as a data array counts as real.
+  async function discoverTypes() {
+    if (state.running) { setStatus('Finish the current scan first.'); return; }
+    state.running = true; state.stopped = false; state.startedAt = Date.now();
+    state.log = []; startClock(); setButtons();
+    const valid = [], withRows = [], dead = [];
+    try {
+      if (!state.me) state.me = await getAuthedUser();
+      let i = 0;
+      for (const t of CANDIDATE_TYPES) {
+        if (state.stopped) break;
+        i++;
+        setStatus(`Checking what Roblox will show us — ${t.label} (${i}/${CANDIDATE_TYPES.length})`);
+        const url = `https://economy.roblox.com/v2/users/${state.me.id}/transactions` +
+          `?transactionType=${encodeURIComponent(t.id)}&limit=10`;
+        let res, body = null;
+        try {
+          res = await fetch(url, { credentials: 'include' });
+          const txt = await res.text();
+          try { body = JSON.parse(txt); } catch (e) {}
+        } catch (e) { dead.push(t.id); logLine(`${t.id}: network error`); continue; }
+
+        if (res.status === 429) { await interruptibleSleep(6000, 'Rate limited'); i--; continue; }
+        const rows = body && Array.isArray(body.data) ? body.data : null;
+        if (res.ok && rows) {
+          valid.push(t.id);
+          if (rows.length) withRows.push(t.id);
+          logLine(`${t.id}: ok, ${rows.length} row(s) on the first page`);
+        } else {
+          dead.push(t.id);
+          logLine(`${t.id}: HTTP ${res.status} — not a type this account exposes`);
+        }
+        await interruptibleSleep(Math.max(MIN_DELAY_MS, cfg.delayMs), 'Pacing');
+      }
+      store.set('typeProbe', { valid, withRows, dead, at: Date.now() });
+      // anything that actually has rows becomes tracked
+      const merged = new Set(cfg.types.concat(withRows));
+      cfg.types = [...merged]; saveCfg();
+      setStatus(`Found ${withRows.length} transaction types with history (${valid.length} accepted, ${dead.length} unavailable).`);
+      renderTypeBar(); render();
+    } catch (e) {
+      setStatus('⚠ ' + (e instanceof StopSignal ? 'Stopped.' : e.message));
+    } finally {
+      state.running = false; stopClock(); setButtons();
+    }
+  }
+
+  /* ================================================================== *
+   * Ledger — every type, side by side
+   * ================================================================== */
+  function ledger() {
+    const map = new Map();
+    for (const r of state.records) {
+      if (!inRange(r)) continue;
+      const e = map.get(r.txType) || { id: r.txType, label: typeMeta(r.txType).label, inR: 0, outR: 0, count: 0, last: null };
+      if (dirOf(r) === 'out') e.outR += r.amount; else e.inR += r.amount;
+      e.count++;
+      const t = r.created ? new Date(r.created).getTime() : null;
+      if (t && (e.last === null || t > e.last)) e.last = t;
+      map.set(r.txType, e);
+    }
+    return [...map.values()].sort((a, b) => (b.inR + b.outR) - (a.inR + a.outR));
+  }
+
+  /* ================================================================== *
    * Insights
    * ================================================================== */
   function biggestPurchases(n) {
@@ -1345,7 +1465,7 @@
   }
   function effectiveTheme() { return cfg.theme === 'auto' ? siteTheme() : cfg.theme; }
   function applyTheme() {
-    if (panel) panel.setAttribute('data-theme', effectiveTheme());
+    if (panel) { panel.setAttribute('data-theme', effectiveTheme()); panel.setAttribute('data-density', cfg.density || 'cozy'); }
   }
 
   /* ================================================================== *
@@ -1373,367 +1493,15 @@
     wireEvents();
     watchForPrices();
 
+    if (state.records.length) state.records.sort((a, b) => new Date(b.created) - new Date(a.created));
     setButtons();
-    if (state.records.length) {
-      state.records.sort((a, b) => new Date(b.created) - new Date(a.created));
-      setStatus(`Loaded ${fmt(state.records.length)} cached records${state.lastScan ? ' from ' + dtstr(state.lastScan) : ''}.`);
-    } else {
-      setStatus('Idle');
-    }
+    setStatus('Idle');
   }
 
   /* ------------------------------------------------------------------ *
    * Styles — tuned to Roblox's own design language (Builder Sans, their
    * surface/stroke greys, 8/12/16px radii, monochrome line icons).
    * ------------------------------------------------------------------ */
-  function injectStyles() {
-    addStyle(`
-    #rst-overlay, #rst-panel, #rst-panel *{box-sizing:border-box;}
-
-    /* ---------- launchers ---------- */
-    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
-    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
-
-    /* still-scanning indicator, visible with the panel closed */
-    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
-      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
-      animation:rst-pulse 1.2s ease-in-out infinite;}
-    #rst-pagebtn{position:relative;}
-    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
-    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-
-    /* Roblox's own sprite sits on a text baseline slightly differently to ours */
-    .rst-rbxs{display:inline-block;vertical-align:-.15em;margin-right:2px;flex:none;}
-
-    #rst-pagebtn{display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
-      background:#00a2ff;color:#fff;border:none;border-radius:8px;padding:0 14px;height:36px;
-      font:600 14px/1 var(--rst-font);cursor:pointer;transition:background .12s;}
-    #rst-pagebtn:hover{background:#0092e6;}
-    #rst-pagebtn svg{width:18px;height:18px;}
-
-    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
-      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:44px;width:44px;
-      padding:0;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35);transition:width .18s ease,padding .18s ease;
-      overflow:hidden;user-select:none;gap:0;}
-    #rst-fab svg{width:22px;height:22px;flex:none;}
-    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:600 14px var(--rst-font);
-      transition:max-width .18s ease,opacity .15s ease;}
-    #rst-fab:hover{width:180px;padding:0 16px;gap:9px;}
-    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
-    #rst-fab.hide{display:none;}
-
-    /* ---------- shell ---------- */
-    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.6);
-      display:none;align-items:center;justify-content:center;padding:20px;}
-    #rst-overlay.open{display:flex;}
-
-    #rst-panel{
-      --rst-font:"Builder Sans","BuilderSans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
-      --bg:#0f1114; --card:#1b1e23; --card2:#22262c; --line:rgba(255,255,255,.09);
-      --tx:#f2f4f7; --tx2:#9aa3ae; --acc:#00a2ff; --money:#00b06f; --warn:#f2a93b; --bad:#ff6b6b;
-      width:min(1140px,100%);height:min(820px,100%);display:flex;flex-direction:column;position:relative;
-      background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:16px;overflow:hidden;
-      font:14px/1.45 var(--rst-font);box-shadow:0 24px 64px rgba(0,0,0,.55);animation:rst-in .16s ease;}
-    #rst-panel[data-theme="light"]{--bg:#f5f6f7;--card:#fff;--card2:#eef0f2;--line:rgba(0,0,0,.1);
-      --tx:#17181c;--tx2:#5f6772;--money:#00854f;}
-    @keyframes rst-in{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
-
-    /* ---------- top bar ---------- */
-    .rst-top{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);
-      background:var(--card);flex:none;}
-    .rst-brand{display:flex;align-items:center;gap:11px;min-width:0;}
-    .rst-logo{width:36px;height:36px;border-radius:10px;background:rgba(0,162,255,.14);color:var(--acc);
-      display:grid;place-items:center;flex:none;}
-    .rst-logo svg{width:21px;height:21px;}
-    .rst-title{font-size:16px;font-weight:700;letter-spacing:-.2px;line-height:1.2;}
-    .rst-sub{font-size:12px;color:var(--tx2);}
-    .rst-top .sp{flex:1;}
-
-    .rst-cta{height:38px;padding:0 18px;border:none;border-radius:8px;background:var(--acc);color:#fff;
-      font:600 14px var(--rst-font);cursor:pointer;transition:background .12s,opacity .12s;white-space:nowrap;}
-    .rst-cta:hover:not(:disabled){background:#0092e6;}
-    .rst-cta:disabled{opacity:.45;cursor:not-allowed;}
-    .rst-cta.sec{background:transparent;color:var(--tx);border:1px solid var(--line);}
-    .rst-cta.sec:hover:not(:disabled){background:var(--card2);}
-    .rst-ico{width:38px;height:38px;border-radius:8px;border:1px solid var(--line);background:transparent;
-      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;transition:background .12s,color .12s;}
-    .rst-ico:hover{background:var(--card2);color:var(--tx);}
-    .rst-ico svg{width:18px;height:18px;}
-
-    /* ---------- scan bar ---------- */
-    .rst-scan{display:none;align-items:center;gap:12px;padding:10px 18px;background:var(--card);
-      border-bottom:1px solid var(--line);position:relative;flex:none;}
-    .rst-scan.on{display:flex;}
-    .rst-spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(0,162,255,.25);
-      border-top-color:var(--acc);animation:rst-spin .7s linear infinite;flex:none;}
-    @keyframes rst-spin{to{transform:rotate(360deg)}}
-    .rst-scan .txt{flex:1;font-size:13px;color:var(--tx);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-scan .clock{font:600 13px ui-monospace,Consolas,monospace;color:var(--tx2);flex:none;}
-    .rst-scan .mini{height:30px;padding:0 12px;border-radius:7px;border:1px solid var(--line);background:transparent;
-      color:var(--tx2);font:600 12px var(--rst-font);cursor:pointer;flex:none;}
-    .rst-scan .mini:hover{background:var(--card2);color:var(--tx);}
-    .rst-scan .bar{position:absolute;left:0;bottom:0;height:2px;width:100%;overflow:hidden;background:transparent;}
-    .rst-scan .bar i{display:block;height:100%;width:30%;background:var(--acc);animation:rst-slide 1.1s infinite ease-in-out;}
-    @keyframes rst-slide{0%{margin-left:-30%}100%{margin-left:100%}}
-
-    .rst-toast{display:none;align-items:center;gap:10px;padding:10px 18px;font-size:13px;flex:none;
-      border-bottom:1px solid var(--line);}
-    .rst-toast.on{display:flex;}
-    .rst-toast.warn{background:rgba(242,169,59,.1);color:var(--warn);}
-    .rst-toast.err{background:rgba(255,107,107,.1);color:var(--bad);}
-    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
-
-    /* ---------- hero ---------- */
-    .rst-hero{padding:18px;display:flex;gap:14px;align-items:stretch;flex-wrap:wrap;flex:none;}
-    .rst-total{background:linear-gradient(135deg,rgba(0,162,255,.16),rgba(0,176,111,.1));
-      border:1px solid var(--line);border-radius:14px;padding:16px 20px;min-width:250px;flex:1.2;}
-    .rst-total .k{font-size:12px;color:var(--tx2);font-weight:600;letter-spacing:.3px;text-transform:uppercase;}
-    .rst-total .v{display:flex;align-items:center;gap:8px;font-size:34px;font-weight:800;letter-spacing:-1px;
-      line-height:1.15;margin-top:4px;}
-    .rst-total .usd{font-size:13px;color:var(--tx2);font-weight:600;}
-    .rst-total .usd b{color:var(--tx);font-weight:700;}
-    .rst-split{margin-top:14px;}
-    .rst-splitkey{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--tx2);margin-top:7px;}
-    .rst-splitkey span{display:flex;align-items:center;gap:5px;white-space:nowrap;}
-    .rst-splitkey i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none;}
-    .rst-splitkey b{color:var(--tx);font-weight:700;}
-
-    .rst-mini-stats{flex:2;display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
-      grid-auto-rows:1fr;gap:10px;align-content:start;}
-    .rst-ms{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 13px;
-      display:flex;flex-direction:column;justify-content:center;min-width:0;}
-    .rst-ms .k{font-size:11px;color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.4px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-ms .v{font-size:19px;font-weight:700;margin-top:3px;display:flex;align-items:baseline;gap:4px;
-      white-space:nowrap;line-height:1.2;}
-    .rst-ms .v small{font-size:12px;color:var(--tx2);font-weight:600;}
-    .rst-ms .s{font-size:11px;color:var(--tx2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-
-    .rst-rbx{display:inline-block;width:1em;height:1em;vertical-align:-.1em;flex:none;}
-    .rst-rbx svg{width:100%;height:100%;display:block;}
-
-    /* ---------- tabs / tools ---------- */
-    .rst-tabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);flex:none;}
-    .rst-tab{background:none;border:none;color:var(--tx2);padding:11px 14px;font:600 14px var(--rst-font);
-      cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
-    .rst-tab:hover{color:var(--tx);}
-    .rst-tab.on{color:var(--tx);border-bottom-color:var(--acc);}
-
-    .rst-tools{display:flex;gap:10px;align-items:center;padding:14px 18px 6px;flex:none;}
-    .rst-field{flex:1;position:relative;display:flex;align-items:center;}
-    .rst-field svg{position:absolute;left:12px;width:17px;height:17px;color:var(--tx2);pointer-events:none;}
-    .rst-search{width:100%;height:38px;background:var(--card);border:1px solid var(--line);border-radius:8px;
-      color:var(--tx);padding:0 12px 0 36px;font:14px var(--rst-font);}
-    .rst-search:focus{outline:none;border-color:var(--acc);}
-    .rst-select{height:38px;background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--tx);
-      padding:0 10px;font:600 13px var(--rst-font);cursor:pointer;}
-
-    .rst-body{flex:1;overflow:auto;padding:10px 18px 22px;}
-    .rst-body::-webkit-scrollbar{width:10px}
-    .rst-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;border:3px solid var(--bg)}
-
-    /* ---------- game rows ---------- */
-    .rst-summary{font-size:13px;color:var(--tx2);margin:4px 0 12px;}
-    .rst-game{display:flex;align-items:center;gap:14px;padding:11px 12px;border-radius:12px;margin-bottom:8px;
-      cursor:pointer;background:var(--card);border:1px solid transparent;transition:background .12s,border-color .12s;}
-    .rst-game:hover{border-color:var(--line);background:var(--card2);}
-    .rst-game .rank{width:20px;text-align:center;font-weight:700;color:var(--tx2);font-size:13px;flex:none;}
-    .rst-game img{width:52px;height:52px;border-radius:10px;background:var(--card2);flex:none;object-fit:cover;}
-    .rst-game .nm{flex:1;min-width:0;}
-    .rst-game .nm b{display:block;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-game .meta{font-size:12px;color:var(--tx2);margin-top:1px;}
-    .rst-game .amt{text-align:right;flex:none;}
-    .rst-game .amt b{font-size:17px;font-weight:700;color:var(--money);display:flex;align-items:center;gap:5px;justify-content:flex-end;}
-    .rst-game .amt small{display:block;font-size:11px;color:var(--tx2);margin-top:1px;}
-    .rst-meter{height:3px;border-radius:2px;background:var(--card2);margin-top:7px;overflow:hidden;}
-    .rst-meter i{display:block;height:100%;background:var(--acc);border-radius:2px;}
-
-    .rst-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}
-    .rst-chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--card2);
-      color:var(--tx2);border:1px solid var(--line);}
-    .rst-chip.pass{color:#66c6ff;} .rst-chip.prod{color:#b79bff;} .rst-chip.serv{color:#ffab6b;}
-    .rst-chip.inf{color:var(--warn);}
-
-    /* ---------- detail ---------- */
-    .rst-back{display:inline-flex;align-items:center;gap:6px;background:none;border:none;color:var(--tx2);
-      font:600 13px var(--rst-font);cursor:pointer;padding:6px 0;margin-bottom:8px;}
-    .rst-back:hover{color:var(--tx);}
-    .rst-dhead{display:flex;gap:16px;align-items:center;padding:16px;background:var(--card);
-      border:1px solid var(--line);border-radius:14px;margin-bottom:14px;flex-wrap:wrap;}
-    .rst-dhead img{width:84px;height:84px;border-radius:14px;background:var(--card2);flex:none;object-fit:cover;}
-    .rst-dhead h2{margin:0 0 3px;font-size:21px;font-weight:700;letter-spacing:-.3px;}
-    .rst-dhead .meta{font-size:12.5px;color:var(--tx2);line-height:1.7;}
-    .rst-dhead .big{margin-left:auto;text-align:right;}
-    .rst-dhead .big b{display:flex;align-items:center;gap:7px;font-size:30px;font-weight:800;color:var(--money);letter-spacing:-1px;}
-    .rst-dhead .big small{font-size:12px;color:var(--tx2);font-weight:600;}
-
-    .rst-catbar{display:flex;height:8px;border-radius:5px;overflow:hidden;margin-bottom:8px;background:var(--card2);}
-    .rst-catkey{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--tx2);margin-bottom:14px;}
-    .rst-catkey span{display:flex;align-items:center;gap:6px;}
-    .rst-catkey i{width:9px;height:9px;border-radius:3px;display:inline-block;}
-
-    .rst-secttl{font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--tx2);
-      margin:18px 0 8px;display:flex;align-items:center;gap:8px;}
-    .rst-secttl b{color:var(--tx);}
-    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--line);}
-
-    .rst-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;margin-bottom:6px;
-      background:var(--card);cursor:pointer;border:1px solid transparent;}
-    .rst-item:hover{border-color:var(--line);background:var(--card2);}
-    .rst-item .x{font-weight:700;font-size:13px;color:var(--acc);background:rgba(0,162,255,.12);border-radius:7px;
-      padding:4px 9px;flex:none;min-width:44px;text-align:center;}
-    .rst-item .nm{flex:1;min-width:0;}
-    .rst-item .nm b{display:block;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-item .nm small{color:var(--tx2);font-size:12px;}
-    .rst-item .tot{font-weight:700;color:var(--money);white-space:nowrap;text-align:right;display:flex;
-      align-items:center;gap:5px;}
-    .rst-item .tot small{color:var(--tx2);font-weight:600;font-size:11px;}
-    .rst-txs{margin:-2px 0 10px 26px;border-left:2px solid var(--line);padding-left:14px;}
-    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;color:var(--tx2);}
-    .rst-tx b{color:var(--tx);font-weight:600;}
-
-    /* ---------- chart / tables ---------- */
-    .rst-chart{display:flex;align-items:flex-end;gap:4px;height:200px;padding:14px;background:var(--card);
-      border:1px solid var(--line);border-radius:12px;overflow-x:auto;}
-    .rst-chart .bar{flex:1;min-width:10px;background:var(--acc);border-radius:4px 4px 0 0;opacity:.85;}
-    .rst-chart .bar:hover{opacity:1;}
-    .rst-chart .bar.zero{background:var(--card2);}
-    .rst-axis{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tx2);padding:8px 4px 0;}
-
-    .rst-table{width:100%;border-collapse:collapse;font-size:13.5px;}
-    .rst-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2);
-      padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);font-weight:700;}
-    .rst-table td{padding:9px 10px;border-bottom:1px solid var(--line);}
-    .rst-table tr:hover td{background:var(--card);}
-    .rst-table .r{text-align:right;white-space:nowrap;}
-    .rst-table .g{color:var(--money);font-weight:700;}
-
-    /* ---------- empty / onboarding ---------- */
-    .rst-empty{text-align:center;color:var(--tx2);padding:40px 20px;}
-    .rst-empty .ico{width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:rgba(0,162,255,.12);
-      color:var(--acc);display:grid;place-items:center;}
-    .rst-empty .ico svg{width:30px;height:30px;}
-    .rst-empty h3{margin:0 0 6px;font-size:19px;font-weight:700;color:var(--tx);}
-    .rst-empty p{margin:0 auto 18px;max-width:440px;font-size:13.5px;line-height:1.65;}
-    .rst-steps{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:20px;}
-    .rst-step{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;width:190px;text-align:left;}
-    .rst-step .n{width:22px;height:22px;border-radius:50%;background:var(--acc);color:#fff;font:700 12px var(--rst-font);
-      display:grid;place-items:center;margin-bottom:8px;}
-    .rst-step b{display:block;font-size:13.5px;color:var(--tx);margin-bottom:2px;}
-    .rst-step span{font-size:12px;line-height:1.55;}
-
-    .rst-note{font-size:12px;color:var(--tx2);margin-top:12px;line-height:1.6;}
-    a.rst-link{color:var(--acc);text-decoration:none;}
-    a.rst-link:hover{text-decoration:underline;}
-
-    /* ---------- menu + settings sheet ---------- */
-    .rst-menu{position:absolute;top:60px;right:18px;z-index:20;min-width:210px;background:var(--card);
-      border:1px solid var(--line);border-radius:12px;padding:6px;display:none;box-shadow:0 12px 32px rgba(0,0,0,.45);}
-    .rst-menu.on{display:block;}
-    .rst-menu button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;color:var(--tx);
-      font:500 13.5px var(--rst-font);padding:9px 10px;border-radius:8px;cursor:pointer;text-align:left;}
-    .rst-menu button:hover{background:var(--card2);}
-    .rst-menu button.danger{color:var(--bad);}
-    .rst-menu hr{border:none;border-top:1px solid var(--line);margin:5px 2px;}
-    .rst-menu svg{width:16px;height:16px;opacity:.8;flex:none;}
-
-    .rst-sheet{position:absolute;inset:0;z-index:30;background:var(--bg);display:none;flex-direction:column;}
-    .rst-sheet.on{display:flex;}
-    .rst-sheet .body{flex:1;overflow:auto;padding:18px;}
-    .rst-set{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px;}
-    .rst-set h4{margin:0 0 3px;font-size:14px;font-weight:700;}
-    .rst-set p{margin:0 0 12px;font-size:12.5px;color:var(--tx2);line-height:1.6;}
-    .rst-set .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-    .rst-flabel{font-size:13px;color:var(--tx2);}
-    .rst-num{width:88px;height:34px;background:var(--card2);border:1px solid var(--line);color:var(--tx);
-      border-radius:8px;padding:0 10px;font:600 13px var(--rst-font);}
-    .rst-switch{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--tx);cursor:pointer;
-      user-select:none;padding:7px 0;}
-    .rst-switch input{appearance:none;width:38px;height:22px;border-radius:999px;background:var(--card2);
-      border:1px solid var(--line);position:relative;cursor:pointer;transition:background .15s;flex:none;margin:0;}
-    .rst-switch input:checked{background:var(--acc);border-color:var(--acc);}
-    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-      background:#fff;transition:transform .15s;}
-    .rst-switch input:checked:after{transform:translateX(16px);}
-    .rst-switch .sub{font-size:12px;color:var(--tx2);display:block;}
-
-    .rst-types{display:flex;gap:7px;flex-wrap:wrap;}
-    .rst-type{font:600 12.5px var(--rst-font);padding:7px 13px;border-radius:8px;border:1px solid var(--line);
-      background:var(--card2);color:var(--tx2);cursor:pointer;user-select:none;transition:all .12s;}
-    .rst-type:hover{color:var(--tx);}
-    .rst-type.on{background:rgba(0,162,255,.15);border-color:var(--acc);color:var(--tx);}
-    .rst-type.in.on{background:rgba(0,176,111,.15);border-color:var(--money);}
-
-    .rst-log{margin:0;padding:12px;background:rgba(0,0,0,.45);color:var(--tx2);border-radius:10px;max-height:220px;
-      overflow:auto;font:11px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
-
-    /* ---------- money / year in review / habits ---------- */
-    .rst-money-top{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;}
-    .rst-money-top .rst-total{min-width:260px;}
-    .rst-money-top .rst-total .v{font-size:32px;}
-
-    .rst-wrap-hero{background:linear-gradient(135deg,rgba(0,162,255,.18),rgba(160,119,255,.14));
-      border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:16px;}
-    .rst-wrap-hero .k{font-size:12px;color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.4px;}
-    .rst-wrap-hero .v{display:flex;align-items:center;gap:10px;font-size:40px;font-weight:800;
-      letter-spacing:-1.5px;line-height:1.1;margin:4px 0 6px;}
-    .rst-wrap-hero .usd{font-size:13px;color:var(--tx2);}
-    .rst-wrap-hero .usd b{color:var(--tx);}
-    .rst-yearpick{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px;}
-
-    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;}
-    .rst-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
-    .rst-card .t{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--tx2);font-weight:700;}
-    .rst-card .b{font-size:17px;font-weight:700;margin:5px 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-card .s{font-size:12.5px;color:var(--tx2);}
-
-    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;}
-    .rst-habit .t{font-size:12.5px;color:var(--tx2);margin-bottom:8px;}
-    .rst-habit b{color:var(--tx);}
-    .rst-cats{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 12px;}
-
-    /* ---------- records, cumulative, reconciliation ---------- */
-    .rst-timeline{position:relative;padding-left:8px;}
-    .rst-mile{display:flex;gap:12px;align-items:flex-start;padding:9px 0 9px 14px;position:relative;
-      border-left:2px solid var(--line);}
-    .rst-mile .dot{position:absolute;left:-6px;top:14px;width:10px;height:10px;border-radius:50%;
-      background:var(--acc);box-shadow:0 0 0 3px var(--bg);}
-    .rst-mile .dot.count{background:#a077ff;}
-    .rst-mile b{font-size:14px;font-weight:600;}
-    .rst-mile .s{font-size:12px;color:var(--tx2);margin-top:1px;}
-
-    .rst-cum{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;height:190px;}
-    .rst-cum svg{width:100%;height:100%;display:block;}
-
-    .rst-recon{border-radius:12px;padding:13px 15px;margin-bottom:14px;border:1px solid var(--line);}
-    .rst-recon.ok{background:rgba(0,176,111,.09);border-color:rgba(0,176,111,.35);}
-    .rst-recon.off{background:rgba(242,169,59,.09);border-color:rgba(242,169,59,.35);}
-    .rst-recon .t{font-weight:700;font-size:14px;margin-bottom:3px;}
-    .rst-recon .s{font-size:12.5px;color:var(--tx2);line-height:1.6;}
-    .rst-recon b{color:var(--tx);}
-
-    .rst-table .up{color:var(--bad);font-weight:700;}
-    .rst-table .down{color:var(--money);font-weight:700;}
-    .rst-table .flat{color:var(--tx2);}
-
-    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;
-      border-bottom:1px solid var(--line);font-size:13.5px;}
-    .rst-exrow small{color:var(--tx2);}
-
-    /* ---------- troubleshoot modal ---------- */
-    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.7);display:none;
-      align-items:center;justify-content:center;padding:20px;}
-    #rst-diag.open{display:flex;}
-    #rst-diag .box{width:min(900px,100%);height:min(640px,100%);background:#0f1114;border:1px solid rgba(255,255,255,.09);
-      border-radius:16px;display:flex;flex-direction:column;overflow:hidden;color:#f2f4f7;
-      --rst-font:"Builder Sans","BuilderSans","Source Sans Pro",Helvetica,Arial,sans-serif;
-      --bg:#0f1114;--card:#1b1e23;--card2:#22262c;--line:rgba(255,255,255,.09);--tx:#f2f4f7;--tx2:#9aa3ae;--acc:#00a2ff;
-      font:14px var(--rst-font);}
-    #rst-diag textarea{flex:1;background:#000;color:#c8ced6;border:none;padding:14px;resize:none;
-      font:11.5px/1.6 ui-monospace,Consolas,monospace;}
-    #rst-diag textarea:focus{outline:none;}
-    `);
-  }
 
   /* ------------------------------------------------------------------ *
    * Icons — monochrome line glyphs at 24px on a 24px grid, drawn with
@@ -1756,6 +1524,14 @@
     wrench: SVG('<path d="M14.8 6.2a4.5 4.5 0 0 0 5.9 5.9l-8.4 8.4a2.1 2.1 0 0 1-3-3l8.4-8.4"/><path d="M14.8 6.2 17.9 3"/>'),
     back: SVG('<path d="M15 5.5 8.5 12l6.5 6.5"/>'),
     pie: SVG('<circle cx="12" cy="12" r="8.6"/><path d="M12 12V3.4"/><path d="M12 12l7.4 4.3"/>'),
+    grid: SVG('<rect x="3.6" y="3.6" width="7" height="7" rx="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="1.6"/>'),
+    coin: SVG('<ellipse cx="12" cy="6.6" rx="7.4" ry="3"/><path d="M4.6 6.6v10.8c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3V6.6"/><path d="M4.6 12c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3"/>'),
+    tag: SVG('<path d="M3.8 11.3V4.6a.8.8 0 0 1 .8-.8h6.7c.2 0 .4.1.6.2l8 8a.8.8 0 0 1 0 1.2l-6.5 6.5a.8.8 0 0 1-1.2 0l-8-8a.8.8 0 0 1-.4-.4Z"/><circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none"/>'),
+    people: SVG('<circle cx="9" cy="8" r="3.2"/><path d="M3.4 19.4a5.8 5.8 0 0 1 11.2 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.7"/><path d="M17.6 14.4a5.8 5.8 0 0 1 3 5"/>'),
+    chart: SVG('<path d="M4 19.4V9.6"/><path d="M9.6 19.4V4.6"/><path d="M15.2 19.4v-7"/><path d="M20.4 19.4V7.4"/>'),
+    trophy: SVG('<path d="M7.4 4.2h9.2v4.4a4.6 4.6 0 1 1-9.2 0Z"/><path d="M7.4 5.8H4.8v1.4a3 3 0 0 0 2.6 3"/><path d="M16.6 5.8h2.6v1.4a3 3 0 0 1-2.6 3"/><path d="M12 13.2v3.4"/><path d="M8.6 19.8h6.8"/>'),
+    star: SVG('<path d="m12 3.6 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8Z"/>'),
+    list: SVG('<path d="M8.4 6.4h11.2"/><path d="M8.4 12h11.2"/><path d="M8.4 17.6h11.2"/><circle cx="4.6" cy="6.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.6" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.6" cy="17.6" r="1.1" fill="currentColor" stroke="none"/>'),
     robux: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.05 1.1 13.4 3.6 10.9 12.95 1.55 10.45 4.05 1.1Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M6.6 5.05 10 5.96 9.1 9.36 5.7 8.45 6.6 5.05Z" fill="currentColor"/></svg>`
   };
 
@@ -1889,197 +1665,6 @@
   /* ------------------------------------------------------------------ *
    * Panel markup
    * ------------------------------------------------------------------ */
-  function buildPanel() {
-    overlay = document.createElement('div');
-    overlay.id = 'rst-overlay';
-    overlay.innerHTML = `
-      <div id="rst-panel" data-theme="${effectiveTheme()}">
-
-        <header class="rst-top">
-          <div class="rst-brand">
-            <span class="rst-logo">${ICONS.logo}</span>
-            <div>
-              <div class="rst-title">Robux Tracker</div>
-              <div class="rst-sub" id="rst-sub">—</div>
-            </div>
-          </div>
-          <div class="sp"></div>
-          <button class="rst-cta" data-act="primary" id="rst-primary">Scan purchases</button>
-          <button class="rst-ico" data-act="menu" title="More">${ICONS.dots}</button>
-          <button class="rst-ico" data-act="settings" title="Settings">${ICONS.gear}</button>
-          <button class="rst-ico" id="rst-close" title="Close (Esc)">${ICONS.close}</button>
-        </header>
-
-        <div class="rst-scan" id="rst-scan">
-          <span class="rst-spin"></span>
-          <span class="txt" id="rst-status">Idle</span>
-          <span class="clock" id="rst-elapsed"></span>
-          <button class="mini" data-act="pause">Pause</button>
-          <button class="mini" data-act="stop">Stop</button>
-          <span class="bar"><i></i></span>
-        </div>
-
-        <div class="rst-toast" id="rst-toast"><span id="rst-toast-text"></span><span class="x" data-act="dismiss">✕</span></div>
-
-        <div class="rst-hero" id="rst-hero"></div>
-
-        <nav class="rst-tabs">
-          <button class="rst-tab on" data-tab="games">Games</button>
-          <button class="rst-tab" data-tab="items">Items</button>
-          <button class="rst-tab" data-tab="money">Money</button>
-          <button class="rst-tab" data-tab="timeline">Timeline</button>
-          <button class="rst-tab" data-tab="sellers">Creators</button>
-          <button class="rst-tab" data-tab="records">Records</button>
-          <button class="rst-tab" data-tab="year">Year in review</button>
-        </nav>
-
-        <div class="rst-tools">
-          <label class="rst-field">${ICONS.search}
-            <input class="rst-search" id="rst-search" placeholder="Search a game, item or creator…">
-          </label>
-          <select class="rst-select" id="rst-sort">
-            <option value="total">Most spent</option>
-            <option value="count">Most purchases</option>
-            <option value="recent">Most recent</option>
-            <option value="name">Name A–Z</option>
-          </select>
-          <select class="rst-select" id="rst-range">
-            <option value="all">All time</option>
-            <option value="ytd">This year</option>
-            <option value="365">Last 12 months</option>
-            <option value="90">Last 90 days</option>
-            <option value="30">Last 30 days</option>
-          </select>
-        </div>
-
-        <div class="rst-body" id="rst-body"></div>
-
-        <div class="rst-menu" id="rst-menu">
-          <button data-act="update">${ICONS.refresh} Check for new purchases</button>
-          <button data-act="scan">${ICONS.refresh} Rescan everything</button>
-          <button data-act="resume" id="rst-resume-btn">${ICONS.refresh} Resume interrupted scan</button>
-          <hr>
-          <button data-act="csv">${ICONS.down} Export CSV</button>
-          <button data-act="json">${ICONS.down} Export JSON</button>
-          <button data-act="copy">${ICONS.copy} Copy summary</button>
-          <button data-act="share">${ICONS.down} Save summary card (PNG)</button>
-          <hr>
-          <button data-act="diag">${ICONS.wrench} Troubleshoot</button>
-          <button data-act="clear" class="danger">${ICONS.trash} Delete local data</button>
-        </div>
-
-        <section class="rst-sheet" id="rst-sheet">
-          <header class="rst-top">
-            <button class="rst-ico" data-act="closesheet" title="Back">${ICONS.back}</button>
-            <div class="rst-brand"><div><div class="rst-title">Settings</div>
-              <div class="rst-sub">Everything is stored locally in your browser</div></div></div>
-          </header>
-          <div class="body">
-            <div class="rst-set">
-              <h4>What to track</h4>
-              <p>“Purchases” is what you spent inside games. The green ones are Robux coming in — turn them on to compare in against out.</p>
-              <div class="rst-types" id="rst-typebar"></div>
-            </div>
-
-            <div class="rst-set">
-              <h4>Display</h4>
-              <label class="rst-switch"><input type="checkbox" id="rst-usd" ${cfg.showUsd ? 'checked' : ''}>
-                <span>Show what it would cost in dollars<span class="sub" id="rst-usd-note"></span></span></label>
-              <label class="rst-switch"><input type="checkbox" id="rst-premium" ${cfg.premium ? 'checked' : ''}>
-                <span>I have Roblox Premium<span class="sub">Premium gives more Robux per pack, so the money figures change</span></span></label>
-
-              <div class="row" style="margin-top:12px">
-                <span class="rst-flabel">Currency</span>
-                <select class="rst-select" id="rst-curmode">
-                  <option value="auto">Detected from my Buy Robux page</option>
-                  <option value="usd">US dollars</option>
-                  <option value="custom">Something else…</option>
-                </select>
-              </div>
-              <div class="row" id="rst-custom-row" style="margin-top:8px">
-                <span class="rst-flabel">Show as</span>
-                <select class="rst-select" id="rst-cursym">
-                  ${['$', '€', '£', 'R$', 'C$', 'A$', '¥', '₹', '₽', '₺', 'kr', 'zł', 'R', '₩', '₪', 'CHF'].map(s =>
-                    `<option value="${s}" ${cfg.curSymbol === s ? 'selected' : ''}>${s}</option>`).join('')}
-                </select>
-                <span class="rst-flabel">and 1,000 R$ costs</span>
-                <input class="rst-num" id="rst-curper" type="number" min="0.01" step="0.01" value="${cfg.curPer1000}">
-              </div>
-
-              <div class="row" style="margin-top:10px">
-                <span class="rst-flabel">Price everything using</span>
-                <select class="rst-select" id="rst-refpack"></select>
-              </div>
-              <p style="margin:8px 0 0" id="rst-rate-note"></p>
-
-              <div class="row" style="margin-top:10px">
-                <a class="rst-cta sec" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;line-height:38px"
-                   href="https://www.roblox.com/upgrades/robux" target="_blank" rel="noreferrer">Detect my local prices</a>
-              </div>
-              <label class="rst-switch"><input type="checkbox" id="rst-merge" ${cfg.smartMerge ? 'checked' : ''}>
-                <span>Group loose purchases by creator<span class="sub">Attaches purchases with no game info to that creator's game when there's only one</span></span></label>
-              <div class="row" style="margin-top:10px">
-                <span class="rst-flabel">Theme</span>
-                <select class="rst-select" id="rst-theme-sel">
-                  <option value="auto">Match Roblox</option>
-                  <option value="dark">Dark</option>
-                  <option value="light">Light</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="rst-set">
-              <h4>Scan speed</h4>
-              <p id="rst-speed-note"></p>
-              <label class="rst-switch"><input type="checkbox" id="rst-turbo" ${cfg.turbo ? 'checked' : ''}>
-                <span>Faster scanning<span class="sub">Reads ${MAX_LANES} pages at a time instead of one. Off by default — the steady pace is
-                gentler on Roblox and a first scan only happens once.</span></span></label>
-              <div class="row" style="margin-top:8px">
-                <span class="rst-flabel">Pause between requests</span>
-                <input class="rst-num" id="rst-delay" type="number" min="${MIN_DELAY_MS}" step="50" value="${cfg.delayMs}">
-                <span class="rst-flabel">ms (minimum ${MIN_DELAY_MS})</span>
-              </div>
-            </div>
-
-            <div class="rst-set" id="rst-excluded-set">
-              <h4>Excluded games</h4>
-              <p>Groups you've left out of every total. Useful for catalog buys or a mis-grouped creator.</p>
-              <div id="rst-excluded"></div>
-            </div>
-
-            <div class="rst-set">
-              <h4>Scan log</h4>
-              <p>The last scan, page by page. Useful only if something looks wrong.</p>
-              <pre class="rst-log" id="rst-log">Nothing scanned yet.</pre>
-            </div>
-          </div>
-        </section>
-      </div>`;
-    document.body.appendChild(overlay);
-
-    const diag = document.createElement('div');
-    diag.id = 'rst-diag';
-    diag.innerHTML = `
-      <div class="box">
-        <div class="rst-top">
-          <div class="rst-brand"><div><div class="rst-title">Troubleshoot</div>
-            <div class="rst-sub">Send this to whoever is helping you</div></div></div>
-          <div class="sp"></div>
-          <button class="rst-cta sec" id="rst-diag-copy">Copy</button>
-          <button class="rst-ico" id="rst-diag-close">${ICONS.close}</button>
-        </div>
-        <textarea id="rst-diag-text" readonly></textarea>
-      </div>`;
-    document.body.appendChild(diag);
-
-    panel = overlay.querySelector('#rst-panel');
-    $ = sel => overlay.querySelector(sel) || diag.querySelector(sel);
-
-    renderTypeBar();
-    renderExcluded();
-    $('#rst-sort').value = ui.sort;
-    $('#rst-range').value = ui.range;
-  }
 
   function renderExcluded() {
     const box = document.getElementById('rst-excluded');
@@ -2093,86 +1678,18 @@
       const g = byKey.get(k);
       return `<div class="rst-exrow">
         <span>${escapeHtml(g ? g.label : k)}${g ? ` <small>${fmt(g.total)} R$</small>` : ''}</span>
-        <button class="rst-cta sec" data-act="unignore" data-key="${escapeHtml(k)}"
+        <button class="rst-btn" data-act="unignore" data-key="${escapeHtml(k)}"
           style="height:30px;padding:0 11px;font-size:12px">Put back</button>
       </div>`;
     }).join('');
   }
 
-  function renderTypeBar() {
-    const bar = $('#rst-typebar');
-    if (!bar) return;
-    bar.innerHTML = TYPE_CATALOG.map(t =>
-      `<span class="rst-type ${t.kind === 'in' ? 'in' : ''} ${cfg.types.includes(t.id) ? 'on' : ''}"
-        data-type="${t.id}" title="${escapeHtml(t.hint)}">${escapeHtml(t.label)}</span>`).join('');
-  }
 
   /* ------------------------------------------------------------------ *
    * Status / chrome
    * ------------------------------------------------------------------ */
-  function setStatus(t) { const el = document.getElementById('rst-status'); if (el) el.textContent = t; }
 
-  function toast(msg, kind) {
-    const t = document.getElementById('rst-toast');
-    if (!t) return;
-    document.getElementById('rst-toast-text').textContent = msg;
-    t.className = 'rst-toast on ' + (kind || 'warn');
-  }
-  function clearToast() {
-    const t = document.getElementById('rst-toast');
-    if (t) t.className = 'rst-toast';
-  }
 
-  function setButtons() {
-    if (!overlay) return;
-    const primary = $('#rst-primary');
-    if (primary) {
-      primary.textContent = state.running ? 'Scanning…'
-        : state.records.length ? 'Check for new' : 'Scan purchases';
-      primary.disabled = state.running;
-    }
-    const scan = document.getElementById('rst-scan');
-    if (scan) scan.classList.toggle('on', state.running);
-    if (fab) fab.classList.toggle('busy', state.running);
-    // the launchers show progress too, so a scan is visible with the panel shut
-    ['rst-sidebtn', 'rst-pagebtn'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) {
-        el.classList.toggle('rst-scanning', state.running);
-        el.title = state.running ? 'Robux Tracker — scanning…' : 'Robux Tracker';
-      }
-    });
-
-    const p = $('[data-act="pause"]');
-    if (p) p.textContent = state.paused ? 'Continue' : 'Pause';
-
-    const res = $('#rst-resume-btn');
-    if (res) res.style.display = store.get('progress', null) ? 'flex' : 'none';
-
-    const sub = $('#rst-sub');
-    if (sub) {
-      sub.textContent = state.lastScan
-        ? `${fmt(state.records.length)} purchases · updated ${ago(state.lastScan)}`
-        : 'Nothing scanned yet';
-    }
-    const elp = document.getElementById('rst-elapsed');
-    if (elp && !state.running) elp.textContent = '';
-    const log = document.getElementById('rst-log');
-    if (log && state.log.length) log.textContent = state.log.join('\n');
-    const un = document.getElementById('rst-usd-note');
-    if (un) {
-      const src = priceSource();
-      un.textContent = src
-        ? `Your own store prices (${src.tiers.length} packs in ${src.symbol}) were read from the Buy Robux page ${ago(src.detectedAt)}.`
-        : 'Using built-in US prices — open the Buy Robux page once and your region and currency get picked up automatically.';
-    }
-    const note = document.getElementById('rst-speed-note');
-    if (note) {
-      note.textContent = state.lastPace
-        ? `Your last scan ran at about ${state.lastPace} pages per minute.`
-        : 'Roblox limits how fast this data can be pulled, so a first full scan takes a few minutes. After that, “Check for new” only reads what changed.';
-    }
-  }
 
   /* ------------------------------------------------------------------ *
    * Hero summary
@@ -2211,87 +1728,10 @@
   const rangeLabel = () => RANGE_LABELS[ui.range] || 'all time';
 
   // sub goes on its own line — inlining it made narrow cards wrap mid-phrase
-  const msCard = (k, v, sub) =>
-    `<div class="rst-ms"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
-  const monthYear = t => new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 
-  function renderStats() {
-    if (!overlay) return;
-    const hero = $('#rst-hero');
-    if (!hero) return;
 
-    const spend = activeSpend();
-    const income = incomeRecords();
-    const total = spend.reduce((s, r) => s + (r.amount || 0), 0);
-    const inTotal = income.reduce((s, r) => s + (r.amount || 0), 0);
-    const games = buildGames(spend);
-    const attributed = games.filter(g => g.attributed);
-    const { min, max } = dateRange(spend);
-    const days = (min && max) ? Math.max(1, Math.round((max - min) / 864e5)) : 0;
-    const biggest = spend.reduce((m, r) => Math.max(m, r.amount || 0), 0);
 
-    if (!state.records.length) { hero.innerHTML = ''; return; }
-
-    const cards = [
-      msCard('Purchases', fmt(spend.length)),
-      msCard('Games', fmt(attributed.length)),
-      msCard('Average', rbx(spend.length ? total / spend.length : 0), 'per purchase'),
-      msCard('Biggest', rbx(biggest), 'single purchase'),
-      msCard('Per month', rbx(days ? total / (days / 30.44) : 0), 'on average'),
-      msCard('Tracked', `${fmt(days)} <small>days</small>`, min ? 'since ' + monthYear(min) : '')
-    ];
-    if (income.length) cards.unshift(msCard('Robux in', rbx(inTotal), 'bought or earned'));
-
-    // What the Robux actually cost, reconciled from the packs you bought.
-    const mon = tracksCurrency() ? moneyStats() : null;
-    if (mon && mon.paid > 0) {
-      cards.unshift(msCard('Really paid', moneyStr(mon.paid), 'for Robux, all in'));
-    }
-
-    // category split, biggest first — fills out the total card and is genuinely useful
-    const catTotals = new Map();
-    for (const r of spend) {
-      if (!r.amount) continue;
-      const c = categoryOf(r.itemType);
-      catTotals.set(c, (catTotals.get(c) || 0) + r.amount);
-    }
-    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
-    const split = total > 0 && cats.length ? `
-      <div class="rst-split">
-        <div class="rst-catbar">${cats.map(([c, v]) =>
-          `<i style="width:${(v / total) * 100}%;background:${catColor(c)}" title="${escapeHtml(c)}: ${fmt(v)} R$"></i>`).join('')}</div>
-        <div class="rst-splitkey">${cats.slice(0, 3).map(([c, v]) =>
-          `<span><i style="background:${catColor(c)}"></i>${escapeHtml(c)} <b>${((v / total) * 100).toFixed(0)}%</b></span>`).join('')}</div>
-      </div>` : '';
-
-    hero.innerHTML = `
-      <div class="rst-total">
-        <div class="k">Total spent · ${rangeLabel()}</div>
-        <div class="v">${robuxGlyph(28)}${fmt(total)}</div>
-        ${cfg.showUsd ? `<div class="usd">${mon && mon.paid > 0
-            ? `worth about <b>${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b> at what you actually paid per Robux`
-            : `that's about <b>${usd(total)}</b> of Robux`}</div>` : ''}
-        ${split}
-      </div>
-      <div class="rst-mini-stats">${cards.join('')}</div>`;
-  }
-
-  function paintIcons() {
-    if (!overlay) return;
-    overlay.querySelectorAll('img[data-uni]').forEach(img => {
-      const u = img.getAttribute('data-uni');
-      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
-    });
-  }
-
-  function paintIcons() {
-    if (!overlay) return;
-    overlay.querySelectorAll('img[data-uni]').forEach(img => {
-      const u = img.getAttribute('data-uni');
-      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
-    });
-  }
 
   const CAT_COLORS = {
     'Game Passes': '#00a2ff', 'Dev Products': '#a077ff', 'Private Servers': '#ff9a4d',
@@ -2306,10 +1746,13 @@
    * ------------------------------------------------------------------ */
   function render() {
     if (!overlay) return;
-    renderExcluded();
-    renderStats();
     setButtons();
+    renderNav();
     const body = $('#rst-body');
+    const m = pageMeta(ui.tab);
+    const ttl = $('#rst-title'), sb = $('#rst-pagesub');
+    if (ttl) ttl.textContent = ui.gameKey ? 'Game' : m.title;
+    if (sb) sb.textContent = ui.gameKey ? 'Everything you bought there' : m.sub;
 
     if (!state.records.length) {
       body.innerHTML = `<div class="rst-empty">
@@ -2325,24 +1768,27 @@
           <div class="rst-step"><div class="n">3</div><b>Keep it fresh</b>
             <span>“Check for new” afterwards only reads what changed — seconds, not minutes.</span></div>
         </div>
-        <button class="rst-cta" data-act="primary">Scan my purchases</button>
+        <button class="rst-btn pri" data-act="primary">Scan my purchases</button>
         <div class="rst-note">Nothing leaves your browser and nothing is changed on your account — this only reads.</div>
       </div>`;
       return;
     }
 
-    // search/sort/range only apply to the list views
-    const tools = panel.querySelector('.rst-tools');
+    // the search row only makes sense on the list pages
+    const tools = document.getElementById('rst-tools');
     if (tools) tools.style.display =
-      (ui.tab === 'money' || ui.tab === 'year' || ui.tab === 'records') && !ui.gameKey ? 'none' : 'flex';
+      (ui.gameKey || ['games', 'items', 'sellers'].includes(ui.tab)) ? 'flex' : 'none';
 
     if (ui.gameKey) { renderGameDetail(body); return; }
-    if (ui.tab === 'games') renderGames(body);
+    if (ui.tab === 'overview') renderOverview(body);
+    else if (ui.tab === 'games') renderGames(body);
     else if (ui.tab === 'items') renderItems(body);
     else if (ui.tab === 'money') renderMoney(body);
     else if (ui.tab === 'timeline') renderTimeline(body);
     else if (ui.tab === 'year') renderYear(body);
     else if (ui.tab === 'records') renderRecords(body);
+    else if (ui.tab === 'ledger') renderLedger(body);
+    else if (ui.tab === 'customize') renderCustomize(body);
     else renderSellers(body);
   }
 
@@ -2446,8 +1892,8 @@
       </div>
 
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
-        <button class="rst-cta sec" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
-        <button class="rst-cta sec" data-act="ignore" style="height:32px;padding:0 12px;font-size:13px">${
+        <button class="rst-btn" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
+        <button class="rst-btn" data-act="ignore" style="height:32px;padding:0 12px;font-size:13px">${
           isIgnored(g.key) ? 'Include in totals again' : 'Exclude from totals'}</button>
         <span style="font-size:12.5px;color:var(--tx2)">Tap an item to see every purchase and when you made it.</span>
       </div>`;
@@ -2618,6 +2064,1104 @@
       </tbody></table>`;
   }
 
+  function injectStyles() {
+    addStyle(`
+    #rst-overlay, #rst-shell, #rst-shell *{box-sizing:border-box;}
+
+    /* ---------------- launchers ---------------- */
+    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
+    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
+    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
+      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
+      animation:rst-pulse 1.2s ease-in-out infinite;}
+    #rst-pagebtn{position:relative;display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
+      background:#00a2ff;color:#fff;border:none;border-radius:8px;padding:0 14px;height:36px;
+      font:600 14px/1 var(--rf);cursor:pointer;}
+    #rst-pagebtn:hover{filter:brightness(1.08);}
+    #rst-pagebtn svg{width:18px;height:18px;}
+    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
+      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:44px;width:44px;
+      cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35);transition:width .18s,padding .18s;overflow:hidden;padding:0;}
+    #rst-fab svg{width:22px;height:22px;flex:none;}
+    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:600 14px var(--rf);transition:max-width .18s,opacity .15s;}
+    #rst-fab:hover{width:180px;padding:0 16px;gap:9px;}
+    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
+    #rst-fab.hide{display:none;}
+    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
+    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+    /* ---------------- shell ---------------- */
+    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(4,6,10,.72);
+      backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;padding:18px;}
+    #rst-overlay.open{display:flex;}
+
+    #rst-shell{
+      --rf:"Builder Sans","BuilderSans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
+      --acc:#00a2ff; --acc2:#a077ff;
+      --bg:#0b0d11; --panel:#121519; --card:#171b21; --card2:#1e232a; --line:rgba(255,255,255,.07);
+      --line2:rgba(255,255,255,.12); --tx:#f4f6f8; --tx2:#8d97a4; --money:#3ddc97; --warn:#ffc24b; --bad:#ff6b7a;
+      --pad:18px; --gap:14px; --r:14px;
+      width:min(1320px,100%);height:min(880px,100%);display:flex;overflow:hidden;position:relative;
+      background:var(--bg);color:var(--tx);border:1px solid var(--line2);border-radius:20px;
+      font:14px/1.5 var(--rf);box-shadow:0 40px 100px rgba(0,0,0,.7);animation:rst-in .2s cubic-bezier(.2,.9,.3,1);}
+    #rst-shell[data-theme="light"]{--bg:#f2f4f7;--panel:#fff;--card:#fff;--card2:#eef1f5;
+      --line:rgba(0,0,0,.08);--line2:rgba(0,0,0,.14);--tx:#0d1117;--tx2:#5b6675;--money:#0f9d64;}
+    #rst-shell[data-density="compact"]{--pad:12px;--gap:10px;--r:11px;font-size:13px;}
+    @keyframes rst-in{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+
+    /* ---------------- sidebar ---------------- */
+    .rst-side{width:236px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+      display:flex;flex-direction:column;padding:16px 12px;gap:4px;}
+    .rst-side .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 14px;}
+    .rst-side .mark{width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;
+      background:linear-gradient(140deg,var(--acc),var(--acc2));box-shadow:0 4px 14px rgba(0,0,0,.3);}
+    .rst-side .mark svg{width:19px;height:19px;}
+    .rst-side .bn{font-size:15px;font-weight:800;letter-spacing:-.2px;line-height:1.1;}
+    .rst-side .bs{font-size:11px;color:var(--tx2);}
+    .rst-grp{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--tx2);
+      padding:14px 10px 5px;opacity:.75;}
+    .rst-nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;
+      color:var(--tx2);font-weight:600;font-size:13.5px;border:none;background:none;width:100%;text-align:left;
+      transition:background .12s,color .12s;}
+    .rst-nav svg{width:17px;height:17px;flex:none;}
+    .rst-nav:hover{background:var(--card2);color:var(--tx);}
+    .rst-nav.on{background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 22%,transparent),transparent);
+      color:var(--tx);box-shadow:inset 2px 0 0 var(--acc);}
+    .rst-nav .badge{margin-left:auto;font-size:11px;font-weight:700;color:var(--tx2);}
+    .rst-side .foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--line);}
+    .rst-chip{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:var(--card);
+      font-size:12px;color:var(--tx2);}
+    .rst-chip .dot{width:7px;height:7px;border-radius:50%;background:var(--money);flex:none;}
+    .rst-chip.busy .dot{background:var(--acc);animation:rst-pulse 1.1s infinite;}
+
+    /* ---------------- main ---------------- */
+    .rst-main{flex:1;display:flex;flex-direction:column;min-width:0;}
+    .rst-bar{display:flex;align-items:center;gap:10px;padding:14px var(--pad);border-bottom:1px solid var(--line);
+      flex:none;background:var(--panel);}
+    .rst-bar h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.4px;}
+    .rst-bar .sub{font-size:12px;color:var(--tx2);}
+    .rst-bar .sp{flex:1;}
+    .rst-btn{height:36px;padding:0 15px;border-radius:10px;border:1px solid var(--line2);background:transparent;
+      color:var(--tx);font:600 13px var(--rf);cursor:pointer;white-space:nowrap;transition:background .12s;}
+    .rst-btn:hover:not(:disabled){background:var(--card2);}
+    .rst-btn.pri{background:linear-gradient(135deg,var(--acc),color-mix(in srgb,var(--acc) 55%,var(--acc2)));
+      border-color:transparent;color:#fff;}
+    .rst-btn.pri:hover:not(:disabled){filter:brightness(1.09);}
+    .rst-btn:disabled{opacity:.4;cursor:not-allowed;}
+    .rst-ico{width:36px;height:36px;border-radius:10px;border:1px solid var(--line2);background:transparent;
+      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;}
+    .rst-ico:hover{background:var(--card2);color:var(--tx);}
+    .rst-ico svg{width:17px;height:17px;}
+
+    .rst-scan{display:none;align-items:center;gap:12px;padding:9px var(--pad);background:var(--card);
+      border-bottom:1px solid var(--line);position:relative;flex:none;font-size:13px;}
+    .rst-scan.on{display:flex;}
+    .rst-spin{width:15px;height:15px;border-radius:50%;border:2px solid color-mix(in srgb,var(--acc) 30%,transparent);
+      border-top-color:var(--acc);animation:rst-spin .7s linear infinite;flex:none;}
+    @keyframes rst-spin{to{transform:rotate(360deg)}}
+    .rst-scan .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-scan .clock{font:700 12px ui-monospace,Consolas,monospace;color:var(--tx2);}
+    .rst-scan .mini{height:28px;padding:0 11px;border-radius:8px;border:1px solid var(--line2);background:none;
+      color:var(--tx2);font:600 12px var(--rf);cursor:pointer;}
+    .rst-scan .bar{position:absolute;left:0;bottom:0;height:2px;width:100%;overflow:hidden;}
+    .rst-scan .bar i{display:block;height:100%;width:28%;background:var(--acc);animation:rst-slide 1.1s infinite ease-in-out;}
+    @keyframes rst-slide{0%{margin-left:-28%}100%{margin-left:100%}}
+
+    .rst-toast{display:none;align-items:center;gap:10px;padding:10px var(--pad);font-size:13px;flex:none;
+      border-bottom:1px solid var(--line);}
+    .rst-toast.on{display:flex;}
+    .rst-toast.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--warn);}
+    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
+
+    .rst-body{flex:1;overflow:auto;padding:var(--pad);}
+    .rst-body::-webkit-scrollbar{width:11px}
+    .rst-body::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:3px solid var(--bg)}
+
+    .rst-tools{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+    .rst-main > .rst-tools{padding:14px var(--pad) 0;margin:0;flex:none;}
+    .rst-field{flex:1;min-width:220px;position:relative;display:flex;align-items:center;}
+    .rst-field svg{position:absolute;left:12px;width:16px;height:16px;color:var(--tx2);pointer-events:none;}
+    .rst-search{width:100%;height:38px;background:var(--card);border:1px solid var(--line);border-radius:10px;
+      color:var(--tx);padding:0 12px 0 36px;font:14px var(--rf);}
+    .rst-search:focus{outline:none;border-color:var(--acc);}
+    .rst-select{height:38px;background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--tx);
+      padding:0 10px;font:600 13px var(--rf);cursor:pointer;}
+
+    /* ---------------- bento overview ---------------- */
+    .rst-bento{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap);}
+    .rst-t{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;
+      position:relative;overflow:hidden;min-width:0;}
+    .rst-t.w2{grid-column:span 2;} .rst-t.w4{grid-column:span 4;}
+    .rst-t .k{font-size:10.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--tx2);}
+    .rst-t .v{font-size:30px;font-weight:800;letter-spacing:-1px;margin-top:6px;display:flex;align-items:center;gap:8px;line-height:1.1;}
+    .rst-t .v.sm{font-size:21px;letter-spacing:-.4px;}
+    .rst-t .s{font-size:12.5px;color:var(--tx2);margin-top:5px;line-height:1.5;}
+    .rst-t.hero{grid-column:span 2;grid-row:span 2;
+      background:linear-gradient(150deg,color-mix(in srgb,var(--acc) 20%,var(--card)),
+      color-mix(in srgb,var(--acc2) 14%,var(--card)));}
+    .rst-t.hero .v{font-size:46px;letter-spacing:-2px;}
+    .rst-t .spark{position:absolute;left:0;right:0;bottom:0;height:58px;opacity:.5;pointer-events:none;}
+    .rst-t .spark svg{width:100%;height:100%;display:block;}
+    .rst-delta{display:inline-flex;align-items:center;gap:4px;font-weight:700;font-size:12.5px;
+      padding:3px 8px;border-radius:999px;}
+    .rst-delta.up{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);}
+    .rst-delta.down{background:color-mix(in srgb,var(--money) 16%,transparent);color:var(--money);}
+    .rst-delta.flat{background:var(--card2);color:var(--tx2);}
+    .rst-mini-list{display:flex;flex-direction:column;gap:9px;margin-top:12px;}
+    .rst-mini-row{display:flex;align-items:center;gap:10px;font-size:13px;min-width:0;}
+    .rst-mini-row img{width:28px;height:28px;border-radius:8px;background:var(--card2);flex:none;object-fit:cover;}
+    .rst-mini-row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-mini-row .a{font-weight:700;color:var(--money);white-space:nowrap;}
+    .rst-donut{display:flex;align-items:center;gap:16px;margin-top:10px;}
+    .rst-donut svg{width:104px;height:104px;flex:none;}
+    .rst-legend{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--tx2);min-width:0;}
+    .rst-legend span{display:flex;align-items:center;gap:7px;white-space:nowrap;}
+    .rst-legend i{width:9px;height:9px;border-radius:3px;flex:none;}
+    .rst-legend b{color:var(--tx);}
+    @media (max-width:1100px){.rst-bento{grid-template-columns:repeat(2,1fr);} .rst-t.w4{grid-column:span 2;}}
+
+    /* ---------------- shared components ---------------- */
+    .rst-mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);}
+    .rst-ms{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px;min-width:0;}
+    .rst-ms .k{font-size:10.5px;color:var(--tx2);font-weight:800;text-transform:uppercase;letter-spacing:.6px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-ms .v{font-size:21px;font-weight:800;margin-top:4px;display:flex;align-items:baseline;gap:4px;
+      white-space:nowrap;letter-spacing:-.5px;}
+    .rst-ms .v small{font-size:12px;color:var(--tx2);font-weight:600;}
+    .rst-ms .s{font-size:11.5px;color:var(--tx2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+    .rst-rbx{display:inline-block;width:1em;height:1em;vertical-align:-.1em;flex:none;}
+    .rst-rbx svg{width:100%;height:100%;display:block;}
+    .rst-rbxs{display:inline-block;vertical-align:-.15em;margin-right:2px;flex:none;}
+
+    .rst-summary{font-size:13px;color:var(--tx2);margin:0 0 12px;}
+    .rst-game{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:var(--r);margin-bottom:9px;
+      cursor:pointer;background:var(--card);border:1px solid var(--line);transition:transform .12s,border-color .12s;}
+    .rst-game:hover{border-color:var(--acc);transform:translateX(3px);}
+    .rst-game .rank{width:22px;text-align:center;font-weight:800;color:var(--tx2);font-size:13px;flex:none;}
+    .rst-game img{width:54px;height:54px;border-radius:12px;background:var(--card2);flex:none;object-fit:cover;}
+    .rst-game .nm{flex:1;min-width:0;}
+    .rst-game .nm b{display:block;font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-game .meta{font-size:12px;color:var(--tx2);margin-top:2px;}
+    .rst-game .amt{text-align:right;flex:none;}
+    .rst-game .amt b{font-size:18px;font-weight:800;color:var(--money);display:flex;align-items:center;gap:5px;justify-content:flex-end;letter-spacing:-.4px;}
+    .rst-game .amt small{display:block;font-size:11px;color:var(--tx2);margin-top:2px;}
+    .rst-meter{height:4px;border-radius:3px;background:var(--card2);margin-top:8px;overflow:hidden;}
+    .rst-meter i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--acc),var(--acc2));}
+
+    .rst-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
+    .rst-chip2, .rst-chip{font-size:11px;font-weight:700;padding:3px 9px;border-radius:7px;background:var(--card2);
+      color:var(--tx2);border:1px solid var(--line);}
+    .rst-chip.pass{color:#66c6ff;} .rst-chip.prod{color:#b79bff;} .rst-chip.serv{color:#ffab6b;}
+    .rst-chip.inf{color:var(--warn);}
+
+    .rst-back{display:inline-flex;align-items:center;gap:6px;background:none;border:none;color:var(--tx2);
+      font:700 13px var(--rf);cursor:pointer;padding:6px 0;margin-bottom:10px;}
+    .rst-back:hover{color:var(--tx);}
+    .rst-dhead{display:flex;gap:18px;align-items:center;padding:18px;background:var(--card);
+      border:1px solid var(--line);border-radius:var(--r);margin-bottom:16px;flex-wrap:wrap;}
+    .rst-dhead img{width:92px;height:92px;border-radius:16px;background:var(--card2);flex:none;object-fit:cover;}
+    .rst-dhead h2{margin:0 0 4px;font-size:23px;font-weight:800;letter-spacing:-.5px;}
+    .rst-dhead .meta{font-size:12.5px;color:var(--tx2);line-height:1.7;}
+    .rst-dhead .big{margin-left:auto;text-align:right;}
+    .rst-dhead .big b{display:flex;align-items:center;gap:8px;font-size:32px;font-weight:800;color:var(--money);letter-spacing:-1.2px;}
+    .rst-dhead .big small{font-size:12px;color:var(--tx2);font-weight:600;}
+
+    .rst-catbar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin-bottom:9px;background:var(--card2);}
+    .rst-catkey{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--tx2);margin-bottom:16px;}
+    .rst-catkey span{display:flex;align-items:center;gap:6px;}
+    .rst-catkey i{width:9px;height:9px;border-radius:3px;display:inline-block;}
+
+    .rst-secttl{font-size:11.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--tx2);
+      margin:22px 0 10px;display:flex;align-items:center;gap:9px;}
+    .rst-secttl b{color:var(--tx);}
+    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--line);}
+
+    .rst-item{display:flex;align-items:center;gap:13px;padding:11px 14px;border-radius:11px;margin-bottom:7px;
+      background:var(--card);cursor:pointer;border:1px solid var(--line);}
+    .rst-item:hover{border-color:var(--acc);}
+    .rst-item .x{font-weight:800;font-size:13px;color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent);
+      border-radius:8px;padding:4px 10px;flex:none;min-width:46px;text-align:center;}
+    .rst-item .nm{flex:1;min-width:0;}
+    .rst-item .nm b{display:block;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-item .nm small{color:var(--tx2);font-size:12px;}
+    .rst-item .tot{font-weight:800;color:var(--money);white-space:nowrap;text-align:right;display:flex;align-items:center;gap:5px;}
+    .rst-item .tot small{color:var(--tx2);font-weight:600;font-size:11px;}
+    .rst-txs{margin:-3px 0 12px 28px;border-left:2px solid var(--line2);padding-left:14px;}
+    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;color:var(--tx2);}
+    .rst-tx b{color:var(--tx);font-weight:700;}
+
+    .rst-chart{display:flex;align-items:flex-end;gap:4px;height:210px;padding:16px;background:var(--card);
+      border:1px solid var(--line);border-radius:var(--r);overflow-x:auto;}
+    .rst-chart .bar{flex:1;min-width:10px;border-radius:5px 5px 0 0;
+      background:linear-gradient(180deg,var(--acc),color-mix(in srgb,var(--acc) 40%,transparent));}
+    .rst-chart .bar:hover{filter:brightness(1.3);}
+    .rst-chart .bar.zero{background:var(--card2);}
+    .rst-axis{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tx2);padding:9px 4px 0;}
+
+    .rst-table{width:100%;border-collapse:collapse;font-size:13.5px;}
+    .rst-table th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx2);
+      padding:9px 11px;border-bottom:1px solid var(--line2);position:sticky;top:calc(var(--pad) * -1);background:var(--bg);font-weight:800;}
+    .rst-table td{padding:10px 11px;border-bottom:1px solid var(--line);}
+    .rst-table tr:hover td{background:var(--card);}
+    .rst-table .r{text-align:right;white-space:nowrap;}
+    .rst-table .g{color:var(--money);font-weight:800;}
+    .rst-table .up{color:var(--bad);font-weight:800;}
+    .rst-table .down{color:var(--money);font-weight:800;}
+    .rst-table .flat{color:var(--tx2);}
+
+    .rst-empty{text-align:center;color:var(--tx2);padding:52px 20px;}
+    .rst-empty .ico{width:62px;height:62px;margin:0 auto 16px;border-radius:18px;display:grid;place-items:center;color:#fff;
+      background:linear-gradient(140deg,var(--acc),var(--acc2));}
+    .rst-empty .ico svg{width:32px;height:32px;}
+    .rst-empty h3{margin:0 0 8px;font-size:21px;font-weight:800;color:var(--tx);letter-spacing:-.4px;}
+    .rst-empty p{margin:0 auto 20px;max-width:460px;font-size:13.5px;line-height:1.7;}
+    .rst-steps{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:22px;}
+    .rst-step{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;width:200px;text-align:left;}
+    .rst-step .n{width:24px;height:24px;border-radius:50%;color:#fff;font:800 12px var(--rf);
+      background:linear-gradient(140deg,var(--acc),var(--acc2));display:grid;place-items:center;margin-bottom:9px;}
+    .rst-step b{display:block;font-size:13.5px;color:var(--tx);margin-bottom:3px;}
+    .rst-step span{font-size:12px;line-height:1.6;}
+
+    .rst-note{font-size:12px;color:var(--tx2);margin-top:14px;line-height:1.7;}
+    a.rst-link{color:var(--acc);text-decoration:none;}
+    a.rst-link:hover{text-decoration:underline;}
+
+    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--gap);}
+    .rst-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;}
+    .rst-card .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx2);font-weight:800;}
+    .rst-card .b{font-size:17px;font-weight:700;margin:6px 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-card .s{font-size:12.5px;color:var(--tx2);}
+
+    .rst-timeline{position:relative;}
+    .rst-mile{display:flex;gap:13px;align-items:flex-start;padding:10px 0 10px 16px;position:relative;
+      border-left:2px solid var(--line2);}
+    .rst-mile .dot{position:absolute;left:-6px;top:15px;width:10px;height:10px;border-radius:50%;
+      background:var(--acc);box-shadow:0 0 0 3px var(--bg);}
+    .rst-mile .dot.count{background:var(--acc2);}
+    .rst-mile b{font-size:14px;font-weight:700;}
+    .rst-mile .s{font-size:12px;color:var(--tx2);margin-top:2px;}
+
+    .rst-cum{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;height:200px;}
+    .rst-cum svg{width:100%;height:100%;display:block;}
+
+    .rst-recon{border-radius:var(--r);padding:14px 16px;margin-bottom:16px;border:1px solid var(--line2);}
+    .rst-recon.ok{background:color-mix(in srgb,var(--money) 10%,transparent);border-color:color-mix(in srgb,var(--money) 38%,transparent);}
+    .rst-recon.off{background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent);}
+    .rst-recon .t{font-weight:800;font-size:14.5px;margin-bottom:4px;}
+    .rst-recon .s{font-size:12.5px;color:var(--tx2);line-height:1.7;}
+    .rst-recon b{color:var(--tx);}
+
+    .rst-money-top{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:8px;}
+    .rst-money-top .rst-t{flex:1;min-width:250px;}
+    .rst-wrap-hero{background:linear-gradient(150deg,color-mix(in srgb,var(--acc) 22%,var(--card)),
+      color-mix(in srgb,var(--acc2) 16%,var(--card)));border:1px solid var(--line);border-radius:var(--r);
+      padding:24px;margin-bottom:18px;}
+    .rst-wrap-hero .k{font-size:11px;color:var(--tx2);font-weight:800;text-transform:uppercase;letter-spacing:.6px;}
+    .rst-wrap-hero .v{display:flex;align-items:center;gap:10px;font-size:44px;font-weight:800;
+      letter-spacing:-2px;line-height:1.1;margin:6px 0 8px;}
+    .rst-wrap-hero .usd{font-size:13px;color:var(--tx2);}
+    .rst-wrap-hero .usd b{color:var(--tx);}
+    .rst-yearpick,.rst-cats,.rst-types{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px;}
+    .rst-type{font:700 12.5px var(--rf);padding:7px 14px;border-radius:9px;border:1px solid var(--line2);
+      background:var(--card);color:var(--tx2);cursor:pointer;user-select:none;transition:all .12s;}
+    .rst-type:hover{color:var(--tx);}
+    .rst-type.on{background:color-mix(in srgb,var(--acc) 18%,transparent);border-color:var(--acc);color:var(--tx);}
+    .rst-type.in.on{background:color-mix(in srgb,var(--money) 16%,transparent);border-color:var(--money);}
+
+    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--gap);}
+    .rst-habit .t{font-size:12.5px;color:var(--tx2);margin-bottom:9px;}
+    .rst-habit b{color:var(--tx);}
+    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;
+      border-bottom:1px solid var(--line);font-size:13.5px;}
+    .rst-exrow small{color:var(--tx2);}
+
+    /* ---------------- settings ---------------- */
+    .rst-set{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-bottom:var(--gap);}
+    .rst-set h4{margin:0 0 4px;font-size:14.5px;font-weight:800;}
+    .rst-set p{margin:0 0 13px;font-size:12.5px;color:var(--tx2);line-height:1.7;}
+    .rst-set .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    .rst-flabel{font-size:13px;color:var(--tx2);}
+    .rst-num{width:92px;height:36px;background:var(--card2);border:1px solid var(--line2);color:var(--tx);
+      border-radius:9px;padding:0 11px;font:700 13px var(--rf);}
+    .rst-switch{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--tx);cursor:pointer;
+      user-select:none;padding:8px 0;}
+    .rst-switch input{appearance:none;width:40px;height:23px;border-radius:999px;background:var(--card2);
+      border:1px solid var(--line2);position:relative;cursor:pointer;transition:background .15s;flex:none;margin:0;}
+    .rst-switch input:checked{background:var(--acc);border-color:var(--acc);}
+    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
+      background:#fff;transition:transform .15s;}
+    .rst-switch input:checked:after{transform:translateX(17px);}
+    .rst-switch .sub{font-size:12px;color:var(--tx2);display:block;}
+    .rst-swatches{display:flex;gap:9px;flex-wrap:wrap;}
+    .rst-sw{width:34px;height:34px;border-radius:10px;cursor:pointer;border:2px solid transparent;}
+    .rst-sw.on{border-color:var(--tx);box-shadow:0 0 0 3px var(--bg) inset;}
+    .rst-log{margin:0;padding:13px;background:rgba(0,0,0,.4);color:var(--tx2);border-radius:11px;max-height:230px;
+      overflow:auto;font:11px/1.65 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
+
+    /* ---------------- command palette ---------------- */
+    #rst-cmd{position:absolute;inset:0;z-index:60;background:rgba(0,0,0,.5);display:none;
+      align-items:flex-start;justify-content:center;padding-top:14vh;}
+    #rst-cmd.on{display:flex;}
+    #rst-cmd .box{width:min(620px,92%);background:var(--panel);border:1px solid var(--line2);border-radius:16px;
+      overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,.6);}
+    #rst-cmd input{width:100%;height:54px;background:none;border:none;border-bottom:1px solid var(--line);
+      color:var(--tx);padding:0 18px;font:16px var(--rf);}
+    #rst-cmd input:focus{outline:none;}
+    #rst-cmd .list{max-height:340px;overflow:auto;padding:8px;}
+    #rst-cmd .row{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;}
+    #rst-cmd .row.sel{background:var(--card2);}
+    #rst-cmd .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    #rst-cmd .row .h{font-size:11.5px;color:var(--tx2);}
+    #rst-cmd .row svg{width:16px;height:16px;color:var(--tx2);flex:none;}
+    #rst-cmd .none{padding:22px;text-align:center;color:var(--tx2);font-size:13px;}
+
+    /* ---------------- troubleshoot ---------------- */
+    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.75);display:none;
+      align-items:center;justify-content:center;padding:20px;}
+    #rst-diag.open{display:flex;}
+    #rst-diag .box{width:min(900px,100%);height:min(640px,100%);background:#0b0d11;border:1px solid rgba(255,255,255,.12);
+      border-radius:18px;display:flex;flex-direction:column;overflow:hidden;color:#f4f6f8;
+      --rf:"Builder Sans",system-ui,sans-serif;--tx:#f4f6f8;--tx2:#8d97a4;--line:rgba(255,255,255,.07);
+      --line2:rgba(255,255,255,.12);--card2:#1e232a;--acc:#00a2ff;--panel:#121519;font:14px var(--rf);}
+    #rst-diag textarea{flex:1;background:#05070a;color:#c8ced6;border:none;padding:16px;resize:none;
+      font:11.5px/1.7 ui-monospace,Consolas,monospace;}
+    #rst-diag textarea:focus{outline:none;}
+    `);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Pages
+   * ------------------------------------------------------------------ */
+  const PAGES = [
+    { grp: 'Overview' },
+    { id: 'overview', label: 'Dashboard', icon: 'grid', title: 'Dashboard', sub: 'The short version' },
+    { id: 'money', label: 'Real money', icon: 'coin', title: 'Real money', sub: 'What you actually paid, reconciled from your Robux purchases' },
+    { grp: 'Where it went' },
+    { id: 'games', label: 'Games', icon: 'pie', title: 'Games', sub: 'Every game you have spent in' },
+    { id: 'items', label: 'Items', icon: 'tag', title: 'Items', sub: 'What you bought, how often, and what you went back for' },
+    { id: 'sellers', label: 'Creators', icon: 'people', title: 'Creators', sub: 'Who actually received your Robux' },
+    { grp: 'When' },
+    { id: 'timeline', label: 'Timeline', icon: 'chart', title: 'Timeline', sub: 'Month by month, and how it added up' },
+    { id: 'records', label: 'Records', icon: 'trophy', title: 'Records', sub: 'Streaks, milestones and the games that went quiet' },
+    { id: 'year', label: 'Year in review', icon: 'star', title: 'Year in review', sub: 'Pick a year and see how it went' },
+    { grp: 'Data' },
+    { id: 'ledger', label: 'All transactions', icon: 'list', title: 'All transactions', sub: 'Every type Roblox will show us' },
+    { id: 'customize', label: 'Customize', icon: 'gear', title: 'Customize', sub: 'Make it yours — everything is stored locally' }
+  ];
+  const pageMeta = id => PAGES.find(p => p.id === id) || PAGES[1];
+
+  const ACCENTS = [
+    ['#00a2ff', '#a077ff'], ['#a077ff', '#ff6fae'], ['#3ddc97', '#00a2ff'],
+    ['#ff9a4d', '#ff6b7a'], ['#ff6fae', '#a077ff'], ['#f2d24d', '#ff9a4d']
+  ];
+
+  /* ------------------------------------------------------------------ *
+   * Shell
+   * ------------------------------------------------------------------ */
+  function buildPanel() {
+    overlay = document.createElement('div');
+    overlay.id = 'rst-overlay';
+    overlay.innerHTML = `
+      <div id="rst-shell" data-theme="${effectiveTheme()}" data-density="${cfg.density || 'cozy'}">
+
+        <aside class="rst-side">
+          <div class="brand">
+            <span class="mark">${ICONS.logo}</span>
+            <div><div class="bn">Robux Tracker</div><div class="bs" id="rst-sub">—</div></div>
+          </div>
+          <div id="rst-nav"></div>
+          <div class="foot">
+            <div class="rst-chip" id="rst-chip"><span class="dot"></span><span id="rst-chiptext">Idle</span></div>
+          </div>
+        </aside>
+
+        <main class="rst-main">
+          <header class="rst-bar">
+            <div style="min-width:0">
+              <h1 id="rst-title">Dashboard</h1>
+              <div class="sub" id="rst-pagesub">The short version</div>
+            </div>
+            <div class="sp"></div>
+            <button class="rst-btn" data-act="palette" title="Search everything (Ctrl+K)">⌘ Search</button>
+            <button class="rst-btn pri" data-act="primary" id="rst-primary">Scan</button>
+            <button class="rst-ico" data-act="menu" title="More">${ICONS.dots}</button>
+            <button class="rst-ico" id="rst-close" title="Close (Esc)">${ICONS.close}</button>
+          </header>
+
+          <div class="rst-scan" id="rst-scan">
+            <span class="rst-spin"></span>
+            <span class="txt" id="rst-status">Idle</span>
+            <span class="clock" id="rst-elapsed"></span>
+            <button class="mini" data-act="pause">Pause</button>
+            <button class="mini" data-act="stop">Stop</button>
+            <span class="bar"><i></i></span>
+          </div>
+
+          <div class="rst-toast" id="rst-toast"><span id="rst-toast-text"></span><span class="x" data-act="dismiss">✕</span></div>
+
+          <div class="rst-tools" id="rst-tools">
+            <label class="rst-field">${ICONS.search}
+              <input class="rst-search" id="rst-search" placeholder="Search a game, item or creator…  ( / )">
+            </label>
+            <select class="rst-select" id="rst-sort">
+              <option value="total">Most spent</option>
+              <option value="count">Most purchases</option>
+              <option value="recent">Most recent</option>
+              <option value="name">Name A–Z</option>
+            </select>
+            <select class="rst-select" id="rst-range">
+              <option value="all">All time</option>
+              <option value="ytd">This year</option>
+              <option value="365">Last 12 months</option>
+              <option value="90">Last 90 days</option>
+              <option value="30">Last 30 days</option>
+            </select>
+          </div>
+
+          <div class="rst-body" id="rst-body"></div>
+        </main>
+
+        <div class="rst-menu" id="rst-menu">
+          <button data-act="update">${ICONS.refresh} Check for new</button>
+          <button data-act="scan">${ICONS.refresh} Rescan everything</button>
+          <button data-act="discover">${ICONS.wrench} Find every transaction type</button>
+          <button data-act="resume" id="rst-resume-btn">${ICONS.refresh} Resume interrupted scan</button>
+          <hr>
+          <button data-act="csv">${ICONS.down} Export CSV</button>
+          <button data-act="json">${ICONS.down} Export JSON</button>
+          <button data-act="copy">${ICONS.copy} Copy summary</button>
+          <button data-act="share">${ICONS.down} Save summary card</button>
+          <hr>
+          <button data-act="diag">${ICONS.wrench} Troubleshoot</button>
+          <button data-act="clear" class="danger">${ICONS.trash} Delete local data</button>
+        </div>
+
+        <div id="rst-cmd">
+          <div class="box">
+            <input id="rst-cmd-input" placeholder="Jump to a page, or search your games…" autocomplete="off">
+            <div class="list" id="rst-cmd-list"></div>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const diag = document.createElement('div');
+    diag.id = 'rst-diag';
+    diag.innerHTML = `
+      <div class="box">
+        <div class="rst-bar">
+          <div><h1 style="font-size:17px">Troubleshoot</h1><div class="sub">Send this to whoever is helping you</div></div>
+          <div class="sp"></div>
+          <button class="rst-btn" id="rst-diag-copy">Copy</button>
+          <button class="rst-ico" id="rst-diag-close">${ICONS.close}</button>
+        </div>
+        <textarea id="rst-diag-text" readonly></textarea>
+      </div>`;
+    document.body.appendChild(diag);
+
+    panel = overlay.querySelector('#rst-shell');
+    $ = sel => overlay.querySelector(sel) || diag.querySelector(sel);
+
+    applyAccent();
+    renderNav();
+    $('#rst-sort').value = ui.sort;
+    $('#rst-range').value = ui.range;
+  }
+
+  function renderNav() {
+    const nav = $('#rst-nav');
+    if (!nav) return;
+    nav.innerHTML = PAGES.map(p => p.grp
+      ? `<div class="rst-grp">${escapeHtml(p.grp)}</div>`
+      : `<button class="rst-nav ${ui.tab === p.id ? 'on' : ''}" data-tab="${p.id}">
+           ${ICONS[p.icon] || ICONS.pie}<span>${escapeHtml(p.label)}</span>
+           ${p.id === 'games' && state.records.length ? `<span class="badge">${fmt(buildGames(activeSpend()).length)}</span>` : ''}
+         </button>`).join('');
+  }
+
+  function applyAccent() {
+    const a = ACCENTS[cfg.accent] || ACCENTS[0];
+    if (panel) { panel.style.setProperty('--acc', a[0]); panel.style.setProperty('--acc2', a[1]); }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Chrome
+   * ------------------------------------------------------------------ */
+  function setStatus(t) {
+    const el = document.getElementById('rst-status'); if (el) el.textContent = t;
+    const c = document.getElementById('rst-chiptext');
+    if (c && !state.running) c.textContent = state.records.length ? `${fmt(state.records.length)} records` : 'Nothing scanned';
+    else if (c) c.textContent = 'Scanning…';
+  }
+
+  function toast(msg, kind) {
+    const t = document.getElementById('rst-toast');
+    if (!t) return;
+    document.getElementById('rst-toast-text').textContent = msg;
+    t.className = 'rst-toast on ' + (kind || 'warn');
+  }
+  function clearToast() { const t = document.getElementById('rst-toast'); if (t) t.className = 'rst-toast'; }
+
+  function setButtons() {
+    if (!overlay) return;
+    const primary = $('#rst-primary');
+    if (primary) {
+      primary.textContent = state.running ? 'Scanning…' : state.records.length ? 'Check for new' : 'Scan';
+      primary.disabled = state.running;
+    }
+    const scan = document.getElementById('rst-scan');
+    if (scan) scan.classList.toggle('on', state.running);
+    const chip = document.getElementById('rst-chip');
+    if (chip) chip.classList.toggle('busy', state.running);
+    if (fab) fab.classList.toggle('busy', state.running);
+    ['rst-sidebtn', 'rst-pagebtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.classList.toggle('rst-scanning', state.running); el.title = state.running ? 'Robux Tracker — scanning…' : 'Robux Tracker'; }
+    });
+    const p = $('[data-act="pause"]'); if (p) p.textContent = state.paused ? 'Continue' : 'Pause';
+    const res = $('#rst-resume-btn'); if (res) res.style.display = store.get('progress', null) ? 'flex' : 'none';
+    const sub = $('#rst-sub');
+    if (sub) sub.textContent = state.lastScan ? 'updated ' + ago(state.lastScan) : 'never scanned';
+    const elp = document.getElementById('rst-elapsed'); if (elp && !state.running) elp.textContent = '';
+    const log = document.getElementById('rst-log'); if (log && state.log.length) log.textContent = state.log.join('\n');
+    setStatus(document.getElementById('rst-status') ? document.getElementById('rst-status').textContent : '');
+  }
+
+  const msCard = (k, v, sub) =>
+    `<div class="rst-ms"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
+  const monthYear = t => new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+
+  function renderStats() { setButtons(); }
+
+  function paintIcons() {
+    if (!overlay) return;
+    overlay.querySelectorAll('img[data-uni]').forEach(img => {
+      const u = img.getAttribute('data-uni');
+      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Dashboard
+   * ------------------------------------------------------------------ */
+  function sparkline(months) {
+    if (months.length < 2) return '';
+    const max = Math.max(...months.map(m => m.total)) || 1;
+    const pts = months.map((m, i) => `${(i / (months.length - 1)) * 100},${40 - (m.total / max) * 38}`).join(' ');
+    return `<div class="spark"><svg viewBox="0 0 100 40" preserveAspectRatio="none">
+      <polygon points="0,40 ${pts} 100,40" fill="currentColor" opacity=".22"></polygon>
+      <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1"
+        vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline></svg></div>`;
+  }
+
+  function donut(cats, total) {
+    const R = 40, C = 2 * Math.PI * R;
+    let off = 0;
+    const rings = cats.slice(0, 6).map(([c, v]) => {
+      const len = (v / total) * C;
+      const seg = `<circle cx="52" cy="52" r="${R}" fill="none" stroke="${catColor(c)}" stroke-width="16"
+        stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"
+        transform="rotate(-90 52 52)"></circle>`;
+      off += len;
+      return seg;
+    }).join('');
+    return `<svg viewBox="0 0 104 104">${rings}</svg>`;
+  }
+
+  function renderOverview(body) {
+    const spend = activeSpend();
+    const games = sortGames(buildGames(spend));
+    const total = games.reduce((s, g) => s + g.total, 0);
+    const months = monthly(spend);
+    const mon = tracksCurrency() ? moneyStats() : null;
+    const cmp = comparisons()[0];
+    const st = streaks();
+    const rc = reconcile();
+
+    const catTotals = new Map();
+    for (const r of spend) if (r.amount) catTotals.set(categoryOf(r.itemType), (catTotals.get(categoryOf(r.itemType)) || 0) + r.amount);
+    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
+
+    const recent = spend.slice().sort((a, b) => new Date(b.created) - new Date(a.created)).slice(0, 6);
+    const delta = cmp ? cmp.delta : 0;
+    const dcls = delta > 0.5 ? 'up' : delta < -0.5 ? 'down' : 'flat';
+
+    body.innerHTML = `
+      <div class="rst-bento">
+        <div class="rst-t hero" style="color:var(--acc)">
+          <div class="k">Total spent · ${rangeLabel()}</div>
+          <div class="v" style="color:var(--tx)">${robuxGlyph(28)}${fmt(total)}</div>
+          <div class="s">${fmt(spend.length)} purchases across ${fmt(games.length)} games${
+            mon && mon.paid ? `<br>worth about <b style="color:var(--tx)">${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b> at what you really paid` : ''}</div>
+          ${sparkline(months)}
+        </div>
+
+        <div class="rst-t">
+          <div class="k">Really paid for Robux</div>
+          <div class="v sm">${mon && mon.paid ? moneyStr(mon.paid) : '—'}</div>
+          <div class="s">${mon && mon.paid
+            ? `${fmt(mon.matchedRobux)} R$ bought · ${moneyStr(mon.matchedRobux ? (mon.paid / mon.matchedRobux) * 1000 : 0)} per 1,000`
+            : 'Turn on Robux purchases to reconcile this'}</div>
+        </div>
+
+        <div class="rst-t">
+          <div class="k">This month</div>
+          <div class="v sm">${robuxGlyph(16)}${fmt(cmp ? cmp.now.total : 0)}</div>
+          <div class="s"><span class="rst-delta ${dcls}">${delta > 0.5 ? '▲' : delta < -0.5 ? '▼' : '='} ${Math.abs(delta).toFixed(0)}%</span>
+            vs ${fmt(cmp ? cmp.prev.total : 0)} last month</div>
+        </div>
+
+        <div class="rst-t w2">
+          <div class="k">Top games</div>
+          <div class="rst-mini-list">
+            ${games.slice(0, 4).map(g => `
+              <div class="rst-mini-row" data-game="${escapeHtml(g.key)}" style="cursor:pointer">
+                <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
+                <span class="n">${escapeHtml(g.label)}</span>
+                <span class="a">${fmt(g.total)}</span>
+              </div>`).join('') || '<div class="s">Nothing yet</div>'}
+          </div>
+        </div>
+
+        <div class="rst-t w2">
+          <div class="k">What you bought</div>
+          <div class="rst-donut">
+            ${cats.length ? donut(cats, total) : ''}
+            <div class="rst-legend">${cats.slice(0, 5).map(([c, v]) =>
+              `<span><i style="background:${catColor(c)}"></i>${escapeHtml(c)} <b>${((v / total) * 100).toFixed(0)}%</b></span>`).join('')}</div>
+          </div>
+        </div>
+
+        <div class="rst-t">
+          <div class="k">Balance check</div>
+          <div class="v sm">${rc.actual == null ? '—' : fmt(rc.actual)}</div>
+          <div class="s">${rc.actual == null ? 'Open roblox.com to read your balance'
+            : Math.abs(rc.gap) > 50 ? `off by ${fmt(Math.abs(rc.gap))} R$ — see Real money`
+            : 'in and out account for everything'}</div>
+        </div>
+
+        <div class="rst-t">
+          <div class="k">Streak</div>
+          <div class="v sm">${st ? fmt(st.best) : 0} <small style="font-size:13px;color:var(--tx2)">days</small></div>
+          <div class="s">${st ? `${fmt(st.days)} days with a purchase` : 'No history yet'}</div>
+        </div>
+
+        <div class="rst-t w2">
+          <div class="k">Latest purchases</div>
+          <div class="rst-mini-list">
+            ${recent.map(r => `<div class="rst-mini-row">
+              <span class="n">${escapeHtml(r.itemName || r.itemType || 'Item')}
+                <span style="color:var(--tx2)"> · ${escapeHtml(r.placeName || r.sellerName || '')}</span></span>
+              <span class="a">${fmt(r.amount)}</span></div>`).join('') || '<div class="s">Nothing yet</div>'}
+          </div>
+        </div>
+      </div>`;
+    fetchIcons(games.slice(0, 4).map(g => g.universeId)).then(paintIcons);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * All transactions
+   * ------------------------------------------------------------------ */
+  function renderLedger(body) {
+    const rows = ledger();
+    const probe = discovered();
+    const untracked = CANDIDATE_TYPES.filter(t => !cfg.types.includes(t.id));
+
+    let html = `<div class="rst-note" style="margin:0 0 14px">
+      Roblox splits your history into separate ledgers. This is every one we can read, and what's in each.
+      ${probe ? `Last checked ${ago(probe.at)} — ${probe.valid.length} accepted, ${probe.dead.length} not available on your account.`
+        : 'Run <b>Find every transaction type</b> from the ⋯ menu to see which ones your account has.'}
+    </div>`;
+
+    if (rows.length) {
+      html += `<table class="rst-table">
+        <thead><tr><th>Ledger</th><th class="r">Entries</th><th class="r">Robux in</th><th class="r">Robux out</th><th class="r">Last</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr><td><b>${escapeHtml(r.label)}</b> <small style="color:var(--tx2)">${escapeHtml(r.id)}</small></td>
+            <td class="r">${fmt(r.count)}</td>
+            <td class="r g">${r.inR ? fmt(r.inR) : '—'}</td>
+            <td class="r" style="color:var(--bad);font-weight:700">${r.outR ? fmt(r.outR) : '—'}</td>
+            <td class="r" style="color:var(--tx2)">${dstr(r.last)}</td></tr>`).join('')}
+        </tbody></table>`;
+    }
+
+    html += `<div class="rst-secttl"><b>Ledgers to track</b></div>
+      <div class="rst-types" id="rst-typebar"></div>`;
+    if (untracked.length) html += `<div class="rst-note">Not tracked yet: ${
+      untracked.map(t => escapeHtml(t.label)).join(', ')}. Tap one to include it, then rescan.</div>`;
+
+    body.innerHTML = html;
+    renderTypeBar();
+  }
+
+  function renderTypeBar() {
+    const bar = document.getElementById('rst-typebar');
+    if (!bar) return;
+    const probe = discovered();
+    const list = probe ? CANDIDATE_TYPES.filter(t => probe.valid.includes(t.id) || cfg.types.includes(t.id)) : CANDIDATE_TYPES;
+    bar.innerHTML = list.map(t => {
+      const has = probe && probe.withRows.includes(t.id);
+      return `<span class="rst-type ${cfg.types.includes(t.id) ? 'on' : ''}" data-type="${t.id}"
+        title="${escapeHtml(t.hint)}">${escapeHtml(t.label)}${has ? ' •' : ''}</span>`;
+    }).join('');
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Customize
+   * ------------------------------------------------------------------ */
+  function renderCustomize(body) {
+    body.innerHTML = `
+      <div class="rst-set">
+        <h4>Look</h4>
+        <p>Accent colour, density and theme. All stored on this machine.</p>
+        <div class="row" style="margin-bottom:12px">
+          <span class="rst-flabel">Accent</span>
+          <div class="rst-swatches">${ACCENTS.map((a, i) =>
+            `<span class="rst-sw ${cfg.accent === i ? 'on' : ''}" data-accent="${i}"
+              style="background:linear-gradient(140deg,${a[0]},${a[1]})"></span>`).join('')}</div>
+        </div>
+        <div class="row">
+          <span class="rst-flabel">Theme</span>
+          <select class="rst-select" id="rst-theme-sel">
+            <option value="auto">Match Roblox</option><option value="dark">Dark</option><option value="light">Light</option>
+          </select>
+          <span class="rst-flabel">Density</span>
+          <select class="rst-select" id="rst-density">
+            <option value="cozy">Cosy</option><option value="compact">Compact</option>
+          </select>
+          <span class="rst-flabel">Opens on</span>
+          <select class="rst-select" id="rst-home">
+            ${PAGES.filter(p => p.id).map(p => `<option value="${p.id}">${escapeHtml(p.label)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="rst-set">
+        <h4>Money</h4>
+        <label class="rst-switch"><input type="checkbox" id="rst-usd" ${cfg.showUsd ? 'checked' : ''}>
+          <span>Show money values<span class="sub" id="rst-usd-note"></span></span></label>
+        <label class="rst-switch"><input type="checkbox" id="rst-premium" ${cfg.premium ? 'checked' : ''}>
+          <span>I have Roblox Premium<span class="sub">Premium gives more Robux per pack</span></span></label>
+        <div class="row" style="margin-top:12px">
+          <span class="rst-flabel">Currency</span>
+          <select class="rst-select" id="rst-curmode">
+            <option value="auto">Detected from my Buy Robux page</option>
+            <option value="usd">US dollars</option>
+            <option value="custom">Something else…</option>
+          </select>
+        </div>
+        <div class="row" id="rst-custom-row" style="margin-top:9px">
+          <span class="rst-flabel">Show as</span>
+          <select class="rst-select" id="rst-cursym">
+            ${['$', '€', '£', 'R$', 'C$', 'A$', '¥', '₹', '₽', '₺', 'kr', 'zł', 'R', '₩', '₪', 'CHF'].map(s =>
+              `<option value="${s}" ${cfg.curSymbol === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+          <span class="rst-flabel">and 1,000 R$ costs</span>
+          <input class="rst-num" id="rst-curper" type="number" min="0.01" step="0.01" value="${cfg.curPer1000}">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <span class="rst-flabel">Price everything using</span>
+          <select class="rst-select" id="rst-refpack"></select>
+        </div>
+        <p style="margin:10px 0 0" id="rst-rate-note"></p>
+        <div class="row" style="margin-top:10px">
+          <a class="rst-btn" style="text-decoration:none;display:inline-flex;align-items:center;line-height:36px"
+             href="https://www.roblox.com/upgrades/robux" target="_blank" rel="noreferrer">Detect my local prices</a>
+        </div>
+      </div>
+
+      <div class="rst-set">
+        <h4>Grouping</h4>
+        <label class="rst-switch"><input type="checkbox" id="rst-merge" ${cfg.smartMerge ? 'checked' : ''}>
+          <span>Group loose purchases by creator<span class="sub">Attaches purchases with no game info to that creator's game when they only have one</span></span></label>
+      </div>
+
+      <div class="rst-set" id="rst-excluded-set">
+        <h4>Excluded games</h4>
+        <p>Left out of every total. Useful for catalog buys or a mis-grouped creator.</p>
+        <div id="rst-excluded"></div>
+      </div>
+
+      <div class="rst-set">
+        <h4>Scanning</h4>
+        <p id="rst-speed-note"></p>
+        <label class="rst-switch"><input type="checkbox" id="rst-turbo" ${cfg.turbo ? 'checked' : ''}>
+          <span>Faster scanning<span class="sub">Reads ${MAX_LANES} pages at once. Off by default — steady is gentler on Roblox.</span></span></label>
+        <div class="row" style="margin-top:9px">
+          <span class="rst-flabel">Pause between requests</span>
+          <input class="rst-num" id="rst-delay" type="number" min="${MIN_DELAY_MS}" step="50" value="${cfg.delayMs}">
+          <span class="rst-flabel">ms (minimum ${MIN_DELAY_MS})</span>
+        </div>
+      </div>
+
+      <div class="rst-set">
+        <h4>Scan log</h4>
+        <p>The last scan, page by page. Only useful if something looks wrong.</p>
+        <pre class="rst-log" id="rst-log">${state.log.length ? escapeHtml(state.log.join('\n')) : 'Nothing scanned yet.'}</pre>
+      </div>`;
+
+    $('#rst-theme-sel').value = cfg.theme;
+    $('#rst-density').value = cfg.density || 'cozy';
+    $('#rst-home').value = cfg.home || 'overview';
+    wireSettings();
+    refreshPricingUI();
+    renderExcluded();
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Command palette
+   * ------------------------------------------------------------------ */
+  function paletteItems(q) {
+    const out = [];
+    for (const p of PAGES) {
+      if (!p.id) continue;
+      if (!q || p.label.toLowerCase().includes(q)) out.push({ kind: 'page', id: p.id, label: p.label, hint: 'Page', icon: p.icon });
+    }
+    if (q) {
+      for (const g of sortGames(buildGames(activeSpend()))) {
+        if (g.label.toLowerCase().includes(q)) {
+          out.push({ kind: 'game', id: g.key, label: g.label, hint: fmt(g.total) + ' R$', icon: 'pie' });
+          if (out.length > 40) break;
+        }
+      }
+    }
+    return out.slice(0, 40);
+  }
+
+  function renderPalette() {
+    const list = $('#rst-cmd-list');
+    const items = paletteItems(ui.cmdQ);
+    ui.cmdItems = items;
+    if (ui.cmdSel >= items.length) ui.cmdSel = 0;
+    list.innerHTML = items.length ? items.map((it, i) =>
+      `<div class="row ${i === ui.cmdSel ? 'sel' : ''}" data-cmd="${i}">
+        ${ICONS[it.icon] || ICONS.pie}<span class="t">${escapeHtml(it.label)}</span><span class="h">${escapeHtml(it.hint)}</span>
+      </div>`).join('') : `<div class="none">Nothing matches “${escapeHtml(ui.cmdQ)}”</div>`;
+  }
+
+  function openPalette() {
+    ui.cmdQ = ''; ui.cmdSel = 0;
+    const box = document.getElementById('rst-cmd');
+    box.classList.add('on');
+    const inp = $('#rst-cmd-input');
+    inp.value = '';
+    renderPalette();
+    setTimeout(() => inp.focus(), 10);
+  }
+  function closePalette() { const b = document.getElementById('rst-cmd'); if (b) b.classList.remove('on'); }
+
+  function runPalette(i) {
+    const it = (ui.cmdItems || [])[i];
+    if (!it) return;
+    closePalette();
+    if (it.kind === 'page') go(it.id);
+    else { ui.tab = 'games'; ui.gameKey = it.id; renderNav(); render(); }
+  }
+
+  function go(tab) {
+    ui.tab = tab; ui.gameKey = null;
+    const m = pageMeta(tab);
+    const t = $('#rst-title'), s = $('#rst-pagesub');
+    if (t) t.textContent = m.title;
+    if (s) s.textContent = m.sub;
+    renderNav();
+    render();
+  }
+
+  // Settings live on their own page now, so their listeners are attached each
+  // time that page renders rather than once at boot.
+  function wireSettings() {
+    const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
+
+    on('#rst-theme-sel', 'change', e => { cfg.theme = e.target.value; saveCfg(); applyTheme(); render(); });
+    on('#rst-density', 'change', e => { cfg.density = e.target.value; saveCfg(); panel.setAttribute('data-density', cfg.density); });
+    on('#rst-home', 'change', e => { cfg.home = e.target.value; saveCfg(); });
+    on('#rst-turbo', 'change', e => { cfg.turbo = e.target.checked; saveCfg(); });
+    on('#rst-merge', 'change', e => { cfg.smartMerge = e.target.checked; saveCfg(); ui.gameKey = null; render(); });
+    on('#rst-usd', 'change', e => { cfg.showUsd = e.target.checked; saveCfg(); render(); });
+    on('#rst-premium', 'change', e => { cfg.premium = e.target.checked; saveCfg(); refreshPricingUI(); });
+    on('#rst-curmode', 'change', e => { cfg.priceMode = e.target.value; saveCfg(); refreshPricingUI(); });
+    on('#rst-cursym', 'change', e => { cfg.curSymbol = e.target.value; saveCfg(); refreshPricingUI(); });
+    on('#rst-curper', 'change', e => {
+      const v = parseFloat(e.target.value);
+      cfg.curPer1000 = (isFinite(v) && v > 0) ? v : 9.99;
+      e.target.value = cfg.curPer1000; saveCfg(); refreshPricingUI();
+    });
+    on('#rst-refpack', 'change', e => { cfg.refRobux = parseInt(e.target.value, 10) || 1000; saveCfg(); refreshPricingUI(); });
+    on('#rst-delay', 'change', e => {
+      cfg.delayMs = Math.max(MIN_DELAY_MS, Math.min(10000, parseInt(e.target.value, 10) || DEFAULTS.delayMs));
+      e.target.value = cfg.delayMs; state.curDelay = cfg.delayMs; saveCfg();
+    });
+  }
+
+  function wireEvents() {
+    $('#rst-close').onclick = closePanel;
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
+
+    // follow the site's own theme when set to match it
+    try {
+      new MutationObserver(() => { if (cfg.theme === 'auto') applyTheme(); })
+        .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    } catch (e) {}
+
+    document.addEventListener('keydown', e => {
+      if (!ui.open) return;
+      const cmdOpen = document.getElementById('rst-cmd').classList.contains('on');
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); cmdOpen ? closePalette() : openPalette(); return; }
+
+      if (cmdOpen) {
+        if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+        else if (e.key === 'ArrowDown') { e.preventDefault(); ui.cmdSel = Math.min((ui.cmdItems || []).length - 1, ui.cmdSel + 1); renderPalette(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); ui.cmdSel = Math.max(0, ui.cmdSel - 1); renderPalette(); }
+        else if (e.key === 'Enter') { e.preventDefault(); runPalette(ui.cmdSel); }
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        const d = document.getElementById('rst-diag');
+        if (d.classList.contains('open')) d.classList.remove('open');
+        else if (document.getElementById('rst-menu').classList.contains('on')) closeMenu();
+        else if (ui.gameKey) { ui.gameKey = null; render(); }
+        else closePanel();
+      }
+      if (e.key === '/' && document.activeElement !== $('#rst-search')) {
+        const s = $('#rst-search');
+        if (s && s.offsetParent !== null) { e.preventDefault(); s.focus(); }
+      }
+    });
+
+    document.getElementById('rst-diag-close').onclick = () => document.getElementById('rst-diag').classList.remove('open');
+    document.getElementById('rst-diag-copy').onclick = () => {
+      const t = $('#rst-diag-text');
+      t.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject())
+        .then(() => { document.getElementById('rst-diag-copy').textContent = '✓ Copied'; })
+        .catch(() => { try { document.execCommand('copy'); } catch (e) {} });
+    };
+
+    // palette
+    $('#rst-cmd-input').addEventListener('input', e => { ui.cmdQ = e.target.value.trim().toLowerCase(); ui.cmdSel = 0; renderPalette(); });
+    document.getElementById('rst-cmd').addEventListener('click', e => {
+      const row = e.target.closest('[data-cmd]');
+      if (row) runPalette(parseInt(row.getAttribute('data-cmd'), 10));
+      else if (e.target.id === 'rst-cmd') closePalette();
+    });
+
+    panel.addEventListener('click', e => {
+      if (!e.target.closest('#rst-menu') && !e.target.closest('[data-act="menu"]')) closeMenu();
+    }, true);
+
+    panel.addEventListener('click', e => {
+      const actEl = e.target.closest('[data-act]');
+      if (actEl) {
+        const act = actEl.getAttribute('data-act');
+        if (act !== 'menu') closeMenu();
+        if (act === 'primary') runScan(state.records.length ? 'update' : 'full');
+        else if (act === 'menu') document.getElementById('rst-menu').classList.toggle('on');
+        else if (act === 'palette') openPalette();
+        else if (act === 'dismiss') clearToast();
+        else if (act === 'scan') runScan('full');
+        else if (act === 'update') runScan('update');
+        else if (act === 'resume') runScan('resume');
+        else if (act === 'discover') discoverTypes();
+        else if (act === 'pause') { state.paused = !state.paused; setButtons(); }
+        else if (act === 'stop') { state.stopped = true; setStatus('Stopping…'); }
+        else if (act === 'diag') runDiagnostics();
+        else if (act === 'csv') exportCSV();
+        else if (act === 'csv-game') exportGameCSV();
+        else if (act === 'json') exportJSON();
+        else if (act === 'copy') copyReport();
+        else if (act === 'share') shareCard();
+        else if (act === 'enable-currency') {
+          if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
+          saveCfg(); runScan('full');
+        }
+        else if (act === 'ignore') { toggleIgnored(ui.gameKey); render(); }
+        else if (act === 'unignore') { toggleIgnored(actEl.getAttribute('data-key')); render(); }
+        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
+        else if (act === 'clear') {
+          if (!confirm('Delete everything this has scanned on this computer?\n\nNothing on your Roblox account changes.')) return;
+          state.records = []; state.ids.clear(); state.pages = 0; state.lastScan = null;
+          store.del('records'); store.del('progress'); store.del('lastScan');
+          ui.gameKey = null; render();
+        }
+        return;
+      }
+
+      const accEl = e.target.closest('[data-accent]');
+      if (accEl) { cfg.accent = parseInt(accEl.getAttribute('data-accent'), 10) || 0; saveCfg(); applyAccent(); render(); return; }
+
+      const navEl = e.target.closest('.rst-nav[data-tab]');
+      if (navEl) { go(navEl.getAttribute('data-tab')); return; }
+
+      const yearEl = e.target.closest('[data-year]');
+      if (yearEl) { ui.year = parseInt(yearEl.getAttribute('data-year'), 10); render(); return; }
+
+      const catEl = e.target.closest('[data-cat]');
+      if (catEl) { ui.cat = catEl.getAttribute('data-cat') || null; render(); return; }
+
+      const typeEl = e.target.closest('[data-type]');
+      if (typeEl) {
+        const id = typeEl.getAttribute('data-type');
+        const i = cfg.types.indexOf(id);
+        if (i < 0) cfg.types.push(id); else cfg.types.splice(i, 1);
+        if (!cfg.types.length) cfg.types = ['Purchase'];
+        saveCfg(); render();
+        return;
+      }
+
+      const itemEl = e.target.closest('[data-item]');
+      if (itemEl) {
+        const k = itemEl.getAttribute('data-item');
+        if (ui.expanded.has(k)) ui.expanded.delete(k); else ui.expanded.add(k);
+        render();
+        return;
+      }
+
+      const gameEl = e.target.closest('[data-game]');
+      if (gameEl) {
+        ui.gameKey = gameEl.getAttribute('data-game');
+        ui.expanded.clear();
+        if (ui.tab !== 'games') { ui.tab = 'games'; renderNav(); }
+        $('#rst-body').scrollTop = 0;
+        render();
+      }
+    });
+
+    // a price typed in for a pack we couldn't match
+    panel.addEventListener('change', e => {
+      const el = e.target.closest('[data-pack]');
+      if (!el) return;
+      const ov = store.get('packOverrides', {});
+      const v = parseFloat(el.value);
+      if (isFinite(v) && v > 0) ov[el.getAttribute('data-pack')] = v; else delete ov[el.getAttribute('data-pack')];
+      store.set('packOverrides', ov);
+      render();
+    });
+
+    let searchTimer = null;
+    $('#rst-search').addEventListener('input', e => {
+      const raw = e.target.value.trim().toLowerCase();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(async () => {
+        ui.q = raw;
+        resolvedFilterUniverse = null;
+        const m = raw.match(/games\/(\d+)/);
+        const placeId = m ? m[1] : (/^\d{5,}$/.test(raw) ? raw : null);
+        if (placeId) {
+          const uni = await placeToUniverse(placeId);
+          if (uni) resolvedFilterUniverse = String(uni);
+        }
+        render();
+      }, 180);
+    });
+
+    $('#rst-sort').addEventListener('change', e => { ui.sort = e.target.value; render(); });
+    $('#rst-range').addEventListener('change', e => { ui.range = e.target.value; ui.gameKey = null; render(); });
+  }
+
   /* ------------------------------------------------------------------ *
    * Records — streaks, milestones and the games you walked away from
    * ------------------------------------------------------------------ */
@@ -2762,7 +3306,7 @@
         <p>Your Robux purchases record the exact pack you bought each time, and pack sizes map
            straight onto prices. Track them and this stops being an estimate — it becomes the
            actual amount of money that left your account.</p>
-        <button class="rst-cta" data-act="enable-currency">Track my Robux purchases</button>
+        <button class="rst-btn pri" data-act="enable-currency">Track my Robux purchases</button>
         <div class="rst-note">Adds one more pass over your history. Same read-only access as everything else.</div>
       </div>`;
       return;
@@ -3040,181 +3584,10 @@
    * Events
    * ------------------------------------------------------------------ */
   function closeMenu() { const m = document.getElementById('rst-menu'); if (m) m.classList.remove('on'); }
-  function openPanel() { overlay.classList.add('open'); ui.open = true; render(); }
+  function openPanel() { overlay.classList.add('open'); ui.open = true; applyTheme(); go(ui.tab); }
   function closePanel() { overlay.classList.remove('open'); ui.open = false; }
   function togglePanel() { ui.open ? closePanel() : openPanel(); }
 
-  function wireEvents() {
-    $('#rst-close').onclick = closePanel;
-    overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
-
-    $('#rst-theme-sel').value = cfg.theme;
-    $('#rst-theme-sel').addEventListener('change', e => {
-      cfg.theme = e.target.value; saveCfg(); applyTheme(); render();
-    });
-    // follow the site when set to match it
-    try {
-      new MutationObserver(() => { if (cfg.theme === 'auto') applyTheme(); })
-        .observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    } catch (e) {}
-    $('#rst-turbo').addEventListener('change', e => { cfg.turbo = e.target.checked; saveCfg(); });
-
-    // clicking anywhere else dismisses the overflow menu
-    panel.addEventListener('click', e => {
-      if (!e.target.closest('#rst-menu') && !e.target.closest('[data-act="menu"]')) closeMenu();
-    }, true);
-
-    document.addEventListener('keydown', e => {
-      if (!ui.open) return;
-      if (e.key === 'Escape') {
-        const d = document.getElementById('rst-diag');
-        const sheet = document.getElementById('rst-sheet');
-        if (d.classList.contains('open')) d.classList.remove('open');
-        else if (document.getElementById('rst-menu').classList.contains('on')) closeMenu();
-        else if (sheet.classList.contains('on')) sheet.classList.remove('on');
-        else if (ui.gameKey) { ui.gameKey = null; render(); }
-        else closePanel();
-      }
-      if (e.key === '/' && document.activeElement !== $('#rst-search')) { e.preventDefault(); $('#rst-search').focus(); }
-    });
-
-    document.getElementById('rst-diag-close').onclick = () => document.getElementById('rst-diag').classList.remove('open');
-    document.getElementById('rst-diag-copy').onclick = () => {
-      const t = $('#rst-diag-text');
-      t.select();
-      (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject())
-        .then(() => { document.getElementById('rst-diag-copy').textContent = '✓ Copied'; })
-        .catch(() => { try { document.execCommand('copy'); } catch (e) {} });
-    };
-
-    panel.addEventListener('click', e => {
-      const actEl = e.target.closest('[data-act]');
-      if (actEl) {
-        const act = actEl.getAttribute('data-act');
-        if (act !== 'menu') closeMenu();
-        if (act === 'primary') runScan(state.records.length ? 'update' : 'full');
-        else if (act === 'menu') { const m = document.getElementById('rst-menu'); m.classList.toggle('on'); }
-        else if (act === 'settings') document.getElementById('rst-sheet').classList.add('on');
-        else if (act === 'closesheet') document.getElementById('rst-sheet').classList.remove('on');
-        else if (act === 'dismiss') clearToast();
-        else if (act === 'enable-currency') {
-          if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
-          saveCfg(); renderTypeBar(); runScan('full');
-        }
-        else if (act === 'scan') runScan('full');
-        else if (act === 'update') runScan('update');
-        else if (act === 'resume') runScan('resume');
-        else if (act === 'pause') { state.paused = !state.paused; setButtons(); }
-        else if (act === 'stop') { state.stopped = true; setStatus('Stopping…'); }
-        else if (act === 'diag') runDiagnostics();
-        else if (act === 'csv') exportCSV();
-        else if (act === 'csv-game') exportGameCSV();
-        else if (act === 'json') exportJSON();
-        else if (act === 'copy') copyReport();
-        else if (act === 'share') shareCard();
-        else if (act === 'ignore') { toggleIgnored(ui.gameKey); render(); }
-        else if (act === 'unignore') { toggleIgnored(actEl.getAttribute('data-key')); renderExcluded(); render(); }
-        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
-        else if (act === 'clear') {
-          if (!confirm('Clear all scanned data stored in this browser?\n\nThis only deletes the local cache — nothing on your Roblox account changes.')) return;
-          state.records = []; state.ids.clear(); state.pages = 0; state.lastScan = null;
-          store.del('records'); store.del('progress'); store.del('lastScan');
-          ui.gameKey = null; render(); setStatus('Local data cleared.');
-        }
-        return;
-      }
-
-      const yearEl = e.target.closest('[data-year]');
-      if (yearEl) { ui.year = parseInt(yearEl.getAttribute('data-year'), 10); render(); return; }
-
-      const catEl = e.target.closest('[data-cat]');
-      if (catEl) { ui.cat = catEl.getAttribute('data-cat') || null; render(); return; }
-
-      const typeEl = e.target.closest('[data-type]');
-      if (typeEl) {
-        const id = typeEl.getAttribute('data-type');
-        const i = cfg.types.indexOf(id);
-        if (i < 0) cfg.types.push(id); else cfg.types.splice(i, 1);
-        if (!cfg.types.length) cfg.types = ['Purchase'];
-        saveCfg(); renderTypeBar(); render();
-        return;
-      }
-
-      const tabEl = e.target.closest('[data-tab]');
-      if (tabEl) {
-        ui.tab = tabEl.getAttribute('data-tab');
-        ui.gameKey = null;
-        panel.querySelectorAll('.rst-tab').forEach(t => t.classList.toggle('on', t === tabEl));
-        render();
-        return;
-      }
-
-      const itemEl = e.target.closest('[data-item]');
-      if (itemEl) {
-        const k = itemEl.getAttribute('data-item');
-        if (ui.expanded.has(k)) ui.expanded.delete(k); else ui.expanded.add(k);
-        render();
-        return;
-      }
-
-      const gameEl = e.target.closest('[data-game]');
-      if (gameEl) {
-        ui.gameKey = gameEl.getAttribute('data-game');
-        ui.expanded.clear();
-        $('#rst-body').scrollTop = 0;
-        render();
-      }
-    });
-
-    let searchTimer = null;
-    $('#rst-search').addEventListener('input', e => {
-      const raw = e.target.value.trim().toLowerCase();
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(async () => {
-        ui.q = raw;
-        resolvedFilterUniverse = null;
-        const m = raw.match(/games\/(\d+)/);
-        const placeId = m ? m[1] : (/^\d{5,}$/.test(raw) ? raw : null);
-        if (placeId) {
-          const uni = await placeToUniverse(placeId);
-          if (uni) resolvedFilterUniverse = String(uni);
-        }
-        render();
-      }, 180);
-    });
-
-    $('#rst-sort').addEventListener('change', e => { ui.sort = e.target.value; render(); });
-    $('#rst-range').addEventListener('change', e => { ui.range = e.target.value; ui.gameKey = null; render(); });
-    $('#rst-delay').addEventListener('change', e => {
-      // hard floor: never let anyone dial this down to a hammering pace
-      cfg.delayMs = Math.max(MIN_DELAY_MS, Math.min(10000, parseInt(e.target.value, 10) || DEFAULTS.delayMs));
-      e.target.value = cfg.delayMs; state.curDelay = cfg.delayMs; saveCfg();
-    });
-    $('#rst-merge').addEventListener('change', e => { cfg.smartMerge = e.target.checked; saveCfg(); ui.gameKey = null; render(); });
-    $('#rst-usd').addEventListener('change', e => { cfg.showUsd = e.target.checked; saveCfg(); render(); });
-    $('#rst-premium').addEventListener('change', e => { cfg.premium = e.target.checked; saveCfg(); refreshPricingUI(); render(); });
-    $('#rst-curmode').addEventListener('change', e => { cfg.priceMode = e.target.value; saveCfg(); refreshPricingUI(); render(); });
-    $('#rst-cursym').addEventListener('change', e => { cfg.curSymbol = e.target.value; saveCfg(); refreshPricingUI(); render(); });
-    $('#rst-curper').addEventListener('change', e => {
-      const v = parseFloat(e.target.value);
-      cfg.curPer1000 = (isFinite(v) && v > 0) ? v : 9.99;
-      e.target.value = cfg.curPer1000; saveCfg(); refreshPricingUI(); render();
-    });
-    // manual price for a pack we couldn't match
-    panel.addEventListener('change', e => {
-      const el = e.target.closest('[data-pack]');
-      if (!el) return;
-      const amount = el.getAttribute('data-pack');
-      const v = parseFloat(el.value);
-      const ov = store.get('packOverrides', {});
-      if (isFinite(v) && v > 0) ov[amount] = v; else delete ov[amount];
-      store.set('packOverrides', ov);
-      render();
-    });
-
-    $('#rst-refpack').addEventListener('change', e => { cfg.refRobux = parseInt(e.target.value, 10) || 1000; saveCfg(); refreshPricingUI(); render(); });
-    refreshPricingUI();
-  }
 
   ready(main);
 })();

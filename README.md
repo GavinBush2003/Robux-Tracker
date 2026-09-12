@@ -11,35 +11,44 @@ It runs entirely in your browser. Nothing is uploaded anywhere.
 
 ## What it does
 
-- **What you actually paid.** Your Robux purchases record the exact pack you bought, and pack
-  sizes map one-to-one onto prices — so the money figure is reconciled from real purchases
-  rather than estimated at some average rate. Anything that can't be matched (gift cards,
-  regional promos) is shown as unmatched and you can price it yourself.
-- **Per-game totals** — every game you've spent in, ranked, with icons and share-of-total,
-  filterable by category.
-- **Per-item breakdown** — open a game to see `Gifting VIP x44 - 35,200 R$`, split into
-  Game Passes / Developer Products / Private Servers / Bundles / Catalog. Click any item
-  for every individual purchase and its date.
-- **Year in review** — pick any year and get the total, your top five games, the item you
-  bought most, your biggest single day, and how many games were new to you that year.
-- **Insights** — the items you kept going back for and what the repeats cost, your biggest
-  single purchases, and when you spend: by weekday and by hour.
-- **Records** — longest buying streak and longest quiet spell, your biggest week and
-  biggest day, milestones dated (first ever purchase, 100th, first 100k spent), and
-  "gone quiet": games you sank Robux into and then stopped.
-- **Balance check** — Robux in minus Robux out should land on your current balance. When it
-  doesn't, the gap is named, along with which transaction types you aren't tracking.
-- **Timeline** — monthly spend chart, a running-total curve, then-and-now comparisons
-  (this month vs last, this year vs last, last 30 days vs the 30 before) and per-year tables.
-- **Exclude a game** from every total — handy for catalog buys or a mis-grouped creator.
-  Excluded groups are listed in Settings and can be put back.
-- **Summary card** — save a shareable PNG of your totals and top games.
-- **Creators** — which developers and groups actually received your Robux.
-- **Local currency** — reads the package prices off your own Buy Robux page, so everything
-  shows in your currency at your region's prices. Or set a rate by hand.
-- **Incremental updates** — the first scan reads your whole history; after that
-  "Check for new" only reads what changed.
-- **Export** — CSV or JSON, all of it or one game at a time.
+Opens as a full app over roblox.com: a sidebar of pages, a dashboard, and a command
+palette (Ctrl+K) for jumping to any page or game.
+
+**Dashboard** — the short version at a glance: total spent with a spending sparkline,
+what you really paid, this month against last, your top games, a breakdown donut,
+balance check, current streak and your latest purchases.
+
+**Real money** — your Robux purchases record the exact pack you bought, and pack sizes map
+one-to-one onto prices, so this is reconciled from real purchases rather than estimated.
+Shows what you paid, your true rate per 1,000 R$, every pack you bought and a per-year
+breakdown. Amounts matching no known pack (gift cards, regional promos) are listed as
+unmatched and can be priced by hand — never guessed.
+
+**Balance check** — Robux in minus Robux out should equal your current balance. When it
+doesn't, the gap is named along with the transaction types you aren't tracking yet.
+
+**Games / Items / Creators** — every game ranked with icons and share-of-total, filterable
+by category; open one for the item-by-item breakdown (`Gifting VIP x44 - 35,200 R$`) and
+every individual purchase with its date. Items adds what you went back for and your
+biggest single purchases. Creators shows who actually received your Robux.
+
+**Timeline** — monthly chart, a running-total curve, then-and-now comparisons, and when you
+spend by weekday and by hour.
+
+**Records** — longest streak and longest quiet spell, biggest week and day, dated milestones
+worked out from the running total, and the games you spent in and then stopped.
+
+**Year in review** — pick a year: total, top five games, standout items, biggest day and
+month, and how many games were new to you.
+
+**All transactions** — every ledger Roblox exposes. "Find every transaction type" probes each
+one and keeps whatever your account actually has, so nothing is assumed.
+
+**Customize** — accent colour, theme (including matching Roblox's own), density, which page
+it opens on, currency and pricing basis, scan pacing, and games excluded from totals.
+
+Plus CSV/JSON export, a shareable PNG summary card, and incremental updates so only the
+first scan is slow.
 
 ## Install
 
