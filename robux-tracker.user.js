@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Robux Tracker — see where your Robux went
 // @namespace    robuxtracker.app
-// @version      6.0.1
+// @version      6.1.0
 // @description  See where your Robux actually went. Reads your own purchase history and breaks it down per game, per category and per item ("Gifting VIP x44"), with real local pricing, a spending timeline and CSV/JSON export. Unofficial; not affiliated with Roblox Corporation.
 // @author       Gavin
 // @match        https://www.roblox.com/*
@@ -24,7 +24,7 @@
   // Every version has used this same guard, so an older copy still enabled in
   // Tampermonkey wins the race and the newer one silently does nothing. Say so
   // out loud instead of looking like the update didn't apply.
-  const VERSION = '6.0.1';
+  const VERSION = '6.1.0';
   if (window.__rstProLoaded) {
     try {
       console.warn(`[Robux Tracker] v${VERSION} did not start — v${window.__rstProLoaded} ` +
@@ -800,7 +800,7 @@
     return out;
   }
 
-  function buildGames(records) {
+  function buildGames(records, keepIgnored) {
     const rescue = cfg.smartMerge ? sellerUniverseMap(records) : new Map();
     const map = new Map();
 
@@ -853,7 +853,10 @@
       it.count++; it.total += r.amount; it.txs.push(r);
       if (t && (it.last === null || t > it.last)) it.last = t;
     }
-    return [...map.values()];
+    const all = [...map.values()];
+    if (keepIgnored) return all;
+    const ig = ignoredSet();
+    return ig.size ? all.filter(g => !ig.has(g.key)) : all;
   }
 
   function sortGames(games) {
@@ -995,10 +998,239 @@
   const tracksCurrency = () => cfg.types.includes('CurrencyPurchase');
 
   /* ================================================================== *
+   * Excluding games
+   *
+   * Catalog/avatar buys and the odd mis-grouped seller can drown out the
+   * numbers you actually care about, so any group can be parked. Excluded
+   * groups stay in storage — they're just left out of every total.
+   * ================================================================== */
+  const ignoredSet = () => new Set(store.get('ignored', []));
+  const isIgnored = key => ignoredSet().has(key);
+  function toggleIgnored(key) {
+    const s = ignoredSet();
+    if (s.has(key)) s.delete(key); else s.add(key);
+    store.set('ignored', [...s]);
+  }
+
+  // Spend records with excluded groups removed — the basis for every headline
+  // number, so the hero and the games list can never disagree.
+  function activeSpend() {
+    const ig = ignoredSet();
+    if (!ig.size) return spendRecords();
+    const out = [];
+    for (const g of buildGames(spendRecords(), true)) if (!ig.has(g.key)) out.push(...g.txs);
+    return out;
+  }
+
+  /* ================================================================== *
+   * Balance reconciliation
+   *
+   * Robux in minus Robux out should land on your current balance. When it
+   * doesn't, the gap is Robux from sources you aren't tracking — which is
+   * useful to say out loud rather than quietly mis-reporting a total.
+   * ================================================================== */
+  function pageBalance() {
+    try {
+      const el = document.getElementById('nav-robux-amount');
+      if (!el) return null;
+      const n = parseInt(String(el.textContent).replace(/[^\d]/g, ''), 10);
+      return isFinite(n) ? n : null;
+    } catch (e) { return null; }
+  }
+
+  function reconcile() {
+    const inRobux = incomeRecords().reduce((s, r) => s + r.amount, 0);
+    const outRobux = spendRecords().reduce((s, r) => s + r.amount, 0);
+    const expected = inRobux - outRobux;
+    const actual = pageBalance();
+    const missingTypes = TYPE_CATALOG.filter(t => !cfg.types.includes(t.id)).map(t => t.label);
+    return { inRobux, outRobux, expected, actual, gap: actual == null ? null : actual - expected, missingTypes };
+  }
+
+  /* ================================================================== *
+   * Records, streaks and milestones
+   * ================================================================== */
+  const dayKey = d => {
+    const x = new Date(d);
+    return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+  };
+
+  function spendRecordsSorted() {
+    return activeSpend().filter(r => r.amount > 0 && r.created)
+      .sort((a, b) => new Date(a.created) - new Date(b.created));
+  }
+
+  function streaks() {
+    const days = [...new Set(spendRecordsSorted().map(r => dayKey(r.created)))].sort();
+    if (!days.length) return null;
+    let best = 1, cur = 1, bestEnd = days[0];
+    let gap = 0, gapFrom = null, gapTo = null;
+    for (let i = 1; i < days.length; i++) {
+      const prev = new Date(days[i - 1] + 'T00:00'), now = new Date(days[i] + 'T00:00');
+      const diff = Math.round((now - prev) / 864e5);
+      if (diff === 1) { cur++; if (cur > best) { best = cur; bestEnd = days[i]; } }
+      else {
+        cur = 1;
+        if (diff - 1 > gap) { gap = diff - 1; gapFrom = days[i - 1]; gapTo = days[i]; }
+      }
+    }
+    return { days: days.length, best, bestEnd, gap, gapFrom, gapTo, first: days[0], last: days[days.length - 1] };
+  }
+
+  // The single richest 7-day window, found by sliding over daily totals.
+  function bestWeek() {
+    const byDay = new Map();
+    for (const r of spendRecordsSorted()) byDay.set(dayKey(r.created), (byDay.get(dayKey(r.created)) || 0) + r.amount);
+    const days = [...byDay.keys()].sort();
+    if (!days.length) return null;
+    let best = null;
+    for (let i = 0; i < days.length; i++) {
+      const start = new Date(days[i] + 'T00:00');
+      let sum = 0;
+      for (let j = i; j < days.length; j++) {
+        const d = new Date(days[j] + 'T00:00');
+        if ((d - start) / 864e5 >= 7) break;
+        sum += byDay.get(days[j]);
+      }
+      if (!best || sum > best.total) best = { from: days[i], total: sum };
+    }
+    return best;
+  }
+
+  // Dates you crossed each round number, worked out from the running total.
+  function milestones() {
+    const recs = spendRecordsSorted();
+    if (!recs.length) return [];
+    const spendMarks = [1000, 10000, 50000, 100000, 250000, 500000, 1000000, 2000000, 5000000];
+    const countMarks = [1, 10, 100, 500, 1000, 2500, 5000, 10000];
+    const out = [];
+    let run = 0, n = 0, si = 0, ci = 0;
+    for (const r of recs) {
+      run += r.amount; n++;
+      while (si < spendMarks.length && run >= spendMarks[si]) {
+        out.push({ kind: 'spend', label: `${fmt(spendMarks[si])} R$ spent`, at: r.created, where: r.placeName || r.sellerName || '' });
+        si++;
+      }
+      while (ci < countMarks.length && n >= countMarks[ci]) {
+        out.push({ kind: 'count', label: countMarks[ci] === 1 ? 'First ever purchase' : `${fmt(countMarks[ci])} purchases`,
+                   at: r.created, where: r.placeName || r.sellerName || '' });
+        ci++;
+      }
+    }
+    return out.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }
+
+  /* ================================================================== *
+   * Dormant spend — games you poured Robux into and then stopped
+   * ================================================================== */
+  function dormantGames(days) {
+    const cutoff = Date.now() - (days || 180) * 864e5;
+    return sortGames(buildGames(activeSpend()))
+      .filter(g => g.last && g.last < cutoff && g.total > 0)
+      .slice(0, 25);
+  }
+
+  /* ================================================================== *
+   * Cumulative spend, and period-over-period comparison
+   * ================================================================== */
+  function cumulative() {
+    const months = monthly(activeSpend());
+    let run = 0;
+    return months.map(m => { run += m.total; return { date: m.date, total: run, month: m.total }; });
+  }
+
+  function periodTotals(from, to) {
+    let total = 0, count = 0;
+    const games = new Set();
+    for (const r of activeSpend()) {
+      if (!r.created || !r.amount) continue;
+      const t = new Date(r.created).getTime();
+      if (t < from || t >= to) continue;
+      total += r.amount; count++;
+      if (r.universeId) games.add(String(r.universeId));
+    }
+    return { total, count, games: games.size };
+  }
+
+  function comparisons() {
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    const mk = (label, a, b) => ({ label, now: a, prev: b,
+      delta: b.total ? ((a.total - b.total) / b.total) * 100 : (a.total ? 100 : 0) });
+    return [
+      mk('This month vs last',
+        periodTotals(new Date(y, m, 1).getTime(), new Date(y, m + 1, 1).getTime()),
+        periodTotals(new Date(y, m - 1, 1).getTime(), new Date(y, m, 1).getTime())),
+      mk('This year vs last',
+        periodTotals(new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()),
+        periodTotals(new Date(y - 1, 0, 1).getTime(), new Date(y, 0, 1).getTime())),
+      mk('Last 30 days vs the 30 before',
+        periodTotals(Date.now() - 30 * 864e5, Date.now() + 864e5),
+        periodTotals(Date.now() - 60 * 864e5, Date.now() - 30 * 864e5))
+    ];
+  }
+
+  /* ================================================================== *
+   * Shareable summary card
+   * ================================================================== */
+  function shareCard() {
+    const W = 1200, H = 630;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const c = cv.getContext('2d');
+    if (!c) { setStatus('Your browser blocked the canvas needed for this.'); return; }
+
+    const g = c.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#0d1b2a'); g.addColorStop(1, '#131018');
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    c.fillStyle = 'rgba(0,162,255,.14)'; c.beginPath(); c.arc(W - 80, -60, 320, 0, 7); c.fill();
+    c.fillStyle = 'rgba(160,119,255,.12)'; c.beginPath(); c.arc(-40, H + 40, 260, 0, 7); c.fill();
+
+    const games = sortGames(buildGames(activeSpend()));
+    const total = games.reduce((s, x) => s + x.total, 0);
+    const count = games.reduce((s, x) => s + x.count, 0);
+    const mon = tracksCurrency() ? moneyStats() : null;
+    const F = (w, s, f) => { c.font = `${w} ${s}px "Builder Sans", "Segoe UI", system-ui, sans-serif`; c.fillStyle = f; };
+
+    F(600, 22, '#7f8b99'); c.fillText('WHERE MY ROBUX WENT', 64, 86);
+    F(800, 96, '#ffffff'); c.fillText(fmt(total) + ' R$', 64, 190);
+    F(600, 26, '#9aa3ae');
+    c.fillText(`${fmt(count)} purchases across ${fmt(games.length)} games` +
+      (mon && mon.paid ? ` · ${moneyStr(mon.paid)} of Robux bought` : ''), 64, 234);
+
+    let y = 316;
+    F(600, 20, '#7f8b99'); c.fillText('TOP GAMES', 64, y - 26);
+    for (const gm of games.slice(0, 5)) {
+      const pct = total ? gm.total / total : 0;
+      c.fillStyle = 'rgba(255,255,255,.07)'; c.fillRect(64, y - 22, W - 128, 40);
+      c.fillStyle = 'rgba(0,162,255,.32)'; c.fillRect(64, y - 22, (W - 128) * pct, 40);
+      F(600, 24, '#e8ecf1');
+      const name = gm.label.length > 42 ? gm.label.slice(0, 41) + '…' : gm.label;
+      c.fillText(name, 80, y + 6);
+      F(700, 24, '#6fe08a');
+      const amt = fmt(gm.total) + ' R$';
+      c.fillText(amt, W - 80 - c.measureText(amt).width, y + 6);
+      y += 54;
+    }
+
+    F(500, 20, '#5d6773');
+    c.fillText('Robux Tracker · unofficial, not affiliated with Roblox Corporation', 64, H - 44);
+
+    cv.toBlob(b => {
+      if (!b) { setStatus('Could not render the card.'); return; }
+      const url = URL.createObjectURL(b);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'my-robux-spending.png'; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      setStatus('Summary card saved as my-robux-spending.png');
+    }, 'image/png');
+  }
+
+  /* ================================================================== *
    * Insights
    * ================================================================== */
   function biggestPurchases(n) {
-    return spendRecords().filter(r => r.amount > 0)
+    return activeSpend().filter(r => r.amount > 0)
       .sort((a, b) => b.amount - a.amount).slice(0, n || 50);
   }
 
@@ -1006,7 +1238,7 @@
   // how much the repeats added up to.
   function repeatBuys() {
     const map = new Map();
-    for (const r of spendRecords()) {
+    for (const r of activeSpend()) {
       if (!r.amount) continue;
       const where = r.placeName || r.sellerName || '';
       const key = (r.itemName || r.itemType || 'item') + '|' + where;
@@ -1026,7 +1258,7 @@
     const dow = new Array(7).fill(0), dowCount = new Array(7).fill(0);
     const hour = new Array(24).fill(0);
     const byDay = new Map();
-    for (const r of spendRecords()) {
+    for (const r of activeSpend()) {
       if (!r.amount || !r.created) continue;
       const d = new Date(r.created);
       dow[d.getDay()] += r.amount; dowCount[d.getDay()]++;
@@ -1050,7 +1282,9 @@
 
   function yearReview(year) {
     const isIn = r => r.created && new Date(r.created).getFullYear() === year;
-    const spend = state.records.filter(r => typeInfo(r.txType).kind === 'out' && isIn(r) && r.amount > 0);
+    const ig = ignoredSet();
+    const keep = r => !ig.size || !ig.has(r.universeId ? 'u:' + r.universeId : 's:' + (r.sellerId || r.sellerName || 'unknown'));
+    const spend = state.records.filter(r => typeInfo(r.txType).kind === 'out' && isIn(r) && r.amount > 0 && keep(r));
     const bought = state.records.filter(r => r.txType === 'CurrencyPurchase' && isIn(r) && r.amount > 0);
 
     const total = spend.reduce((s, r) => s + r.amount, 0);
@@ -1458,6 +1692,34 @@
     .rst-habit b{color:var(--tx);}
     .rst-cats{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 12px;}
 
+    /* ---------- records, cumulative, reconciliation ---------- */
+    .rst-timeline{position:relative;padding-left:8px;}
+    .rst-mile{display:flex;gap:12px;align-items:flex-start;padding:9px 0 9px 14px;position:relative;
+      border-left:2px solid var(--line);}
+    .rst-mile .dot{position:absolute;left:-6px;top:14px;width:10px;height:10px;border-radius:50%;
+      background:var(--acc);box-shadow:0 0 0 3px var(--bg);}
+    .rst-mile .dot.count{background:#a077ff;}
+    .rst-mile b{font-size:14px;font-weight:600;}
+    .rst-mile .s{font-size:12px;color:var(--tx2);margin-top:1px;}
+
+    .rst-cum{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;height:190px;}
+    .rst-cum svg{width:100%;height:100%;display:block;}
+
+    .rst-recon{border-radius:12px;padding:13px 15px;margin-bottom:14px;border:1px solid var(--line);}
+    .rst-recon.ok{background:rgba(0,176,111,.09);border-color:rgba(0,176,111,.35);}
+    .rst-recon.off{background:rgba(242,169,59,.09);border-color:rgba(242,169,59,.35);}
+    .rst-recon .t{font-weight:700;font-size:14px;margin-bottom:3px;}
+    .rst-recon .s{font-size:12.5px;color:var(--tx2);line-height:1.6;}
+    .rst-recon b{color:var(--tx);}
+
+    .rst-table .up{color:var(--bad);font-weight:700;}
+    .rst-table .down{color:var(--money);font-weight:700;}
+    .rst-table .flat{color:var(--tx2);}
+
+    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;
+      border-bottom:1px solid var(--line);font-size:13.5px;}
+    .rst-exrow small{color:var(--tx2);}
+
     /* ---------- troubleshoot modal ---------- */
     #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.7);display:none;
       align-items:center;justify-content:center;padding:20px;}
@@ -1667,6 +1929,7 @@
           <button class="rst-tab" data-tab="money">Money</button>
           <button class="rst-tab" data-tab="timeline">Timeline</button>
           <button class="rst-tab" data-tab="sellers">Creators</button>
+          <button class="rst-tab" data-tab="records">Records</button>
           <button class="rst-tab" data-tab="year">Year in review</button>
         </nav>
 
@@ -1699,6 +1962,7 @@
           <button data-act="csv">${ICONS.down} Export CSV</button>
           <button data-act="json">${ICONS.down} Export JSON</button>
           <button data-act="copy">${ICONS.copy} Copy summary</button>
+          <button data-act="share">${ICONS.down} Save summary card (PNG)</button>
           <hr>
           <button data-act="diag">${ICONS.wrench} Troubleshoot</button>
           <button data-act="clear" class="danger">${ICONS.trash} Delete local data</button>
@@ -1777,6 +2041,12 @@
               </div>
             </div>
 
+            <div class="rst-set" id="rst-excluded-set">
+              <h4>Excluded games</h4>
+              <p>Groups you've left out of every total. Useful for catalog buys or a mis-grouped creator.</p>
+              <div id="rst-excluded"></div>
+            </div>
+
             <div class="rst-set">
               <h4>Scan log</h4>
               <p>The last scan, page by page. Useful only if something looks wrong.</p>
@@ -1806,8 +2076,27 @@
     $ = sel => overlay.querySelector(sel) || diag.querySelector(sel);
 
     renderTypeBar();
+    renderExcluded();
     $('#rst-sort').value = ui.sort;
     $('#rst-range').value = ui.range;
+  }
+
+  function renderExcluded() {
+    const box = document.getElementById('rst-excluded');
+    if (!box) return;
+    const keys = [...ignoredSet()];
+    const set = document.getElementById('rst-excluded-set');
+    if (set) set.style.display = keys.length ? 'block' : 'none';
+    if (!keys.length) { box.innerHTML = ''; return; }
+    const byKey = new Map(buildGames(spendRecords(), true).map(g => [g.key, g]));
+    box.innerHTML = keys.map(k => {
+      const g = byKey.get(k);
+      return `<div class="rst-exrow">
+        <span>${escapeHtml(g ? g.label : k)}${g ? ` <small>${fmt(g.total)} R$</small>` : ''}</span>
+        <button class="rst-cta sec" data-act="unignore" data-key="${escapeHtml(k)}"
+          style="height:30px;padding:0 11px;font-size:12px">Put back</button>
+      </div>`;
+    }).join('');
   }
 
   function renderTypeBar() {
@@ -1932,7 +2221,7 @@
     const hero = $('#rst-hero');
     if (!hero) return;
 
-    const spend = spendRecords();
+    const spend = activeSpend();
     const income = incomeRecords();
     const total = spend.reduce((s, r) => s + (r.amount || 0), 0);
     const inTotal = income.reduce((s, r) => s + (r.amount || 0), 0);
@@ -2017,6 +2306,7 @@
    * ------------------------------------------------------------------ */
   function render() {
     if (!overlay) return;
+    renderExcluded();
     renderStats();
     setButtons();
     const body = $('#rst-body');
@@ -2043,7 +2333,8 @@
 
     // search/sort/range only apply to the list views
     const tools = panel.querySelector('.rst-tools');
-    if (tools) tools.style.display = (ui.tab === 'money' || ui.tab === 'year') && !ui.gameKey ? 'none' : 'flex';
+    if (tools) tools.style.display =
+      (ui.tab === 'money' || ui.tab === 'year' || ui.tab === 'records') && !ui.gameKey ? 'none' : 'flex';
 
     if (ui.gameKey) { renderGameDetail(body); return; }
     if (ui.tab === 'games') renderGames(body);
@@ -2051,11 +2342,12 @@
     else if (ui.tab === 'money') renderMoney(body);
     else if (ui.tab === 'timeline') renderTimeline(body);
     else if (ui.tab === 'year') renderYear(body);
+    else if (ui.tab === 'records') renderRecords(body);
     else renderSellers(body);
   }
 
   function renderGames(body) {
-    const recs = ui.cat ? spendRecords().filter(r => categoryOf(r.itemType) === ui.cat) : spendRecords();
+    const recs = ui.cat ? activeSpend().filter(r => categoryOf(r.itemType) === ui.cat) : activeSpend();
     const games = sortGames(buildGames(recs));
     const shown = games.filter(g => matchesQuery(g, ui.q));
     const grand = games.reduce((s, g) => s + g.total, 0) || 1;
@@ -2118,7 +2410,7 @@
   }
 
   function renderGameDetail(body) {
-    const g = buildGames(spendRecords()).find(x => x.key === ui.gameKey);
+    const g = buildGames(spendRecords(), true).find(x => x.key === ui.gameKey);
     if (!g) { ui.gameKey = null; render(); return; }
 
     const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
@@ -2155,6 +2447,8 @@
 
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
         <button class="rst-cta sec" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
+        <button class="rst-cta sec" data-act="ignore" style="height:32px;padding:0 12px;font-size:13px">${
+          isIgnored(g.key) ? 'Include in totals again' : 'Exclude from totals'}</button>
         <span style="font-size:12.5px;color:var(--tx2)">Tap an item to see every purchase and when you made it.</span>
       </div>`;
 
@@ -2252,7 +2546,7 @@
   }
 
   function renderTimeline(body) {
-    const months = monthly(spendRecords());
+    const months = monthly(activeSpend());
     if (!months.length) { body.innerHTML = `<div class="rst-empty">No dated purchases in this range.</div>`; return; }
     const max = Math.max(...months.map(m => m.total)) || 1;
 
@@ -2290,12 +2584,12 @@
           <td class="r">${fmt(m.count)}</td><td class="r g">${fmt(m.total)}</td>
           ${cfg.showUsd ? `<td class="r">${usd(m.total)}</td>` : ''}</tr>`).join('')}
         </tbody></table>
-      ${habitsHtml()}`;
+      ${cumulativeHtml()}${compareHtml()}${habitsHtml()}`;
   }
 
   function renderSellers(body) {
     const map = new Map();
-    for (const r of spendRecords()) {
+    for (const r of activeSpend()) {
       if (!r.amount) continue;
       const key = r.sellerId != null ? String(r.sellerId) : (r.sellerName || 'unknown');
       const e = map.get(key) || { id: r.sellerId, name: r.sellerName || 'Unknown', total: 0, count: 0, games: new Set(), last: null };
@@ -2325,9 +2619,142 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * Records — streaks, milestones and the games you walked away from
+   * ------------------------------------------------------------------ */
+  function renderRecords(body) {
+    const st = streaks();
+    if (!st) { body.innerHTML = `<div class="rst-empty">Nothing dated to work from yet.</div>`; return; }
+    const wk = bestWeek();
+    const hab = habitStats();
+    const recs = spendRecordsSorted();
+    const firstBuy = recs[0], lastBuy = recs[recs.length - 1];
+
+    let html = `
+      <div class="rst-mini-stats" style="margin-bottom:18px">
+        ${msCard('Longest streak', `${fmt(st.best)} <small>days</small>`, st.best > 1 ? 'ending ' + dstr(st.bestEnd) : 'no back-to-back days')}
+        ${msCard('Longest quiet spell', `${fmt(st.gap)} <small>days</small>`, st.gapFrom ? dstr(st.gapFrom) + ' → ' + dstr(st.gapTo) : '')}
+        ${msCard('Days with a purchase', fmt(st.days), 'since ' + dstr(st.first))}
+        ${wk ? msCard('Biggest week', rbx(wk.total), 'from ' + dstr(wk.from)) : ''}
+        ${hab.peakDay ? msCard('Biggest day', rbx(hab.peakDay.total), dstr(hab.peakDay.date)) : ''}
+      </div>
+
+      <div class="rst-secttl"><b>Bookends</b></div>
+      <div class="rst-cards">
+        <div class="rst-card"><div class="t">First purchase on record</div>
+          <div class="b">${escapeHtml(firstBuy.itemName || firstBuy.itemType || 'Item')}</div>
+          <div class="s">${escapeHtml(firstBuy.placeName || firstBuy.sellerName || 'unknown game')} · ${dstr(firstBuy.created)} · ${fmt(firstBuy.amount)} R$</div></div>
+        <div class="rst-card"><div class="t">Most recent purchase</div>
+          <div class="b">${escapeHtml(lastBuy.itemName || lastBuy.itemType || 'Item')}</div>
+          <div class="s">${escapeHtml(lastBuy.placeName || lastBuy.sellerName || 'unknown game')} · ${dstr(lastBuy.created)} · ${fmt(lastBuy.amount)} R$</div></div>
+      </div>`;
+
+    const ms = milestones();
+    if (ms.length) {
+      html += `<div class="rst-secttl"><b>Milestones</b></div><div class="rst-timeline">`;
+      for (const m of ms) {
+        html += `<div class="rst-mile">
+          <span class="dot ${m.kind}"></span>
+          <div><b>${escapeHtml(m.label)}</b>
+            <div class="s">${dstr(m.at)}${m.where ? ' · ' + escapeHtml(m.where) : ''}</div></div>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+
+    const dormant = dormantGames(180);
+    if (dormant.length) {
+      const parked = dormant.reduce((s, g) => s + g.total, 0);
+      html += `<div class="rst-secttl"><b>Gone quiet</b> — ${fmt(parked)} R$ in games you haven't bought in for 6 months</div>
+        <div class="rst-note" style="margin:0 0 10px">Not necessarily wasted — just where your money stopped moving.</div>`;
+      for (const g of dormant.slice(0, 12)) {
+        html += `
+          <div class="rst-game" data-game="${escapeHtml(g.key)}">
+            <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
+            <div class="nm"><b>${escapeHtml(g.label)}</b>
+              <div class="meta">${fmt(g.count)} purchases · last one ${ago(g.last)}</div></div>
+            <div class="amt"><b>${robuxGlyph(16)}${fmt(g.total)}</b></div>
+          </div>`;
+      }
+      fetchIcons(dormant.map(g => g.universeId)).then(paintIcons);
+    }
+
+    body.innerHTML = html;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Cumulative spend + period comparisons, appended to the Timeline tab
+   * ------------------------------------------------------------------ */
+  function cumulativeHtml() {
+    const cum = cumulative();
+    if (cum.length < 2) return '';
+    const max = cum[cum.length - 1].total || 1;
+    const W = 100, H = 100;
+    const pts = cum.map((c, i) => [(i / (cum.length - 1)) * W, H - (c.total / max) * H]);
+    const line = pts.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' ');
+    const area = `0,${H} ` + line + ` ${W},${H}`;
+
+    return `
+      <div class="rst-secttl"><b>How it added up</b></div>
+      <div class="rst-cum">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+          <polygon points="${area}" fill="rgba(0,162,255,.18)"></polygon>
+          <polyline points="${line}" fill="none" stroke="#00a2ff" stroke-width="0.8"
+            vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline>
+        </svg>
+      </div>
+      <div class="rst-axis">
+        <span>${cum[0].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
+        <span>running total · ${fmt(max)} R$ all in</span>
+        <span>${cum[cum.length - 1].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
+      </div>`;
+  }
+
+  function compareHtml() {
+    const rows = comparisons();
+    if (!rows.some(r => r.now.total || r.prev.total)) return '';
+    const arrow = d => d > 0.5 ? `<span class="up">▲ ${Math.abs(d).toFixed(0)}%</span>`
+      : d < -0.5 ? `<span class="down">▼ ${Math.abs(d).toFixed(0)}%</span>`
+      : `<span class="flat">level</span>`;
+    return `
+      <div class="rst-secttl"><b>Then and now</b></div>
+      <table class="rst-table">
+        <thead><tr><th>Period</th><th class="r">Now</th><th class="r">Before</th><th class="r">Change</th><th class="r">Purchases</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr><td>${r.label}</td>
+            <td class="r g">${fmt(r.now.total)}</td>
+            <td class="r" style="color:var(--tx2)">${fmt(r.prev.total)}</td>
+            <td class="r">${arrow(r.delta)}</td>
+            <td class="r" style="color:var(--tx2)">${fmt(r.now.count)} vs ${fmt(r.prev.count)}</td></tr>`).join('')}
+        </tbody></table>`;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Balance check, shown at the top of the Money tab
+   * ------------------------------------------------------------------ */
+  function reconcileHtml() {
+    const r = reconcile();
+    if (r.actual == null) return '';
+    const off = Math.abs(r.gap) > 50;
+    return `
+      <div class="rst-recon ${off ? 'off' : 'ok'}">
+        <div class="t">${off ? 'Your balance doesn\'t line up' : 'Your balance lines up'}</div>
+        <div class="s">
+          ${fmt(r.inRobux)} R$ in − ${fmt(r.outRobux)} R$ out = <b>${fmt(r.expected)} R$</b>,
+          and Roblox currently shows <b>${fmt(r.actual)} R$</b>.
+          ${off ? `That's a gap of <b>${fmt(Math.abs(r.gap))} R$</b>${
+            r.missingTypes.length ? `, which usually means Robux arrived through something you're not tracking yet —
+            try switching on ${escapeHtml(r.missingTypes.slice(0, 3).join(', '))} in Settings.`
+            : `, which can happen when Roblox's history doesn't reach far enough back.`}`
+          : 'Everything you earned and spent is accounted for.'}
+        </div>
+      </div>`;
+  }
+
+  /* ------------------------------------------------------------------ *
    * Money — what you actually paid, reconciled from your Robux purchases
    * ------------------------------------------------------------------ */
   function renderMoney(body) {
+    const reconHtml = reconcileHtml();
     if (!tracksCurrency()) {
       body.innerHTML = `<div class="rst-empty">
         <div class="ico">${ICONS.logo}</div>
@@ -2350,11 +2777,11 @@
       return;
     }
 
-    const spendTotal = spendRecords().reduce((s, r) => s + r.amount, 0);
+    const spendTotal = activeSpend().reduce((s, r) => s + r.amount, 0);
     const rate = m.matchedRobux ? (m.paid / m.matchedRobux) * 1000 : 0;
     const spentValue = rate ? (spendTotal / 1000) * rate : 0;
 
-    let html = `
+    let html = reconHtml + `
       <div class="rst-money-top">
         <div class="rst-total" style="flex:1">
           <div class="k">You actually paid</div>
@@ -2684,6 +3111,9 @@
         else if (act === 'csv-game') exportGameCSV();
         else if (act === 'json') exportJSON();
         else if (act === 'copy') copyReport();
+        else if (act === 'share') shareCard();
+        else if (act === 'ignore') { toggleIgnored(ui.gameKey); render(); }
+        else if (act === 'unignore') { toggleIgnored(actEl.getAttribute('data-key')); renderExcluded(); render(); }
         else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
         else if (act === 'clear') {
           if (!confirm('Clear all scanned data stored in this browser?\n\nThis only deletes the local cache — nothing on your Roblox account changes.')) return;

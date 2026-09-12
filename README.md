@@ -24,7 +24,16 @@ It runs entirely in your browser. Nothing is uploaded anywhere.
   bought most, your biggest single day, and how many games were new to you that year.
 - **Insights** — the items you kept going back for and what the repeats cost, your biggest
   single purchases, and when you spend: by weekday and by hour.
-- **Timeline** — monthly spend chart plus per-year and per-month tables.
+- **Records** — longest buying streak and longest quiet spell, your biggest week and
+  biggest day, milestones dated (first ever purchase, 100th, first 100k spent), and
+  "gone quiet": games you sank Robux into and then stopped.
+- **Balance check** — Robux in minus Robux out should land on your current balance. When it
+  doesn't, the gap is named, along with which transaction types you aren't tracking.
+- **Timeline** — monthly spend chart, a running-total curve, then-and-now comparisons
+  (this month vs last, this year vs last, last 30 days vs the 30 before) and per-year tables.
+- **Exclude a game** from every total — handy for catalog buys or a mis-grouped creator.
+  Excluded groups are listed in Settings and can be put back.
+- **Summary card** — save a shareable PNG of your totals and top games.
 - **Creators** — which developers and groups actually received your Robux.
 - **Local currency** — reads the package prices off your own Buy Robux page, so everything
   shows in your currency at your region's prices. Or set a rate by hand.
