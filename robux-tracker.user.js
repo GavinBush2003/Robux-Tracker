@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Robux Tracker — see where your Robux went
 // @namespace    robuxtracker.app
-// @version      5.1.0
+// @version      6.0.0
 // @description  See where your Robux actually went. Reads your own purchase history and breaks it down per game, per category and per item ("Gifting VIP x44"), with real local pricing, a spending timeline and CSV/JSON export. Unofficial; not affiliated with Roblox Corporation.
 // @author       Gavin
 // @match        https://www.roblox.com/*
@@ -217,8 +217,8 @@
     refRobux: 1000,      // reference pack: the $9.99 tier
     curSymbol: '€',
     curPer1000: 9.99,
-    theme: 'dark',
-    types: ['Purchase'],
+    theme: 'auto',
+    types: ['Purchase', 'CurrencyPurchase'],
     fabPos: null
   };
   const cfg = Object.assign({}, DEFAULTS, store.get('cfg', {}));
@@ -226,6 +226,12 @@
   // Anything absurd gets pulled back to a sane starting point.
   if (!(cfg.delayMs >= MIN_DELAY_MS && cfg.delayMs <= 3000)) cfg.delayMs = DEFAULTS.delayMs;
   cfg.lanes = Math.max(1, Math.min(MAX_LANES, cfg.lanes || 2));
+  // v6 added real-money reconciliation, which needs the currency-purchase rows.
+  // Existing installs opted into 'Purchase' only, so bring them along once.
+  if (!store.get('v6types', false)) {
+    if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
+    store.set('v6types', true); store.set('cfg', cfg);
+  }
   const saveCfg = () => store.set('cfg', cfg);
 
   // transactionType values, paired with the label the Roblox site shows.
@@ -277,6 +283,7 @@
 
   const ui = {
     open: false, tab: 'games', gameKey: null, q: '', sort: 'total', range: 'all',
+    year: null, cat: null,
     expanded: new Set(),
     iconCache: store.get('icons', {})
   };
@@ -688,7 +695,7 @@
     if (state.running) { setStatus('Wait for the current scan to finish.'); return; }
     const out = [];
     out.push('Robux Tracker — diagnostics ' + new Date().toISOString());
-    out.push('script v5.1.0 · page ' + location.pathname);
+    out.push('script v6.0.0 · page ' + location.pathname);
     try {
       if (!state.me) state.me = await getAuthedUser();
       out.push(`logged in as ${state.me.name} (#${state.me.id})`);
@@ -914,6 +921,186 @@
       if (max === null || t > max) max = t;
     }
     return { min, max };
+  }
+
+  /* ================================================================== *
+   * Real money
+   *
+   * Currency-purchase rows record the exact pack you bought, and pack sizes
+   * map one-to-one onto prices. So instead of valuing your spend at some
+   * average rate, we can add up what you genuinely paid. Anything we can't
+   * match is reported as unmatched rather than guessed at.
+   * ================================================================== */
+  const packOverrides = () => store.get('packOverrides', {});
+
+  function priceForPack(amount) {
+    if (!amount || amount <= 0) return null;
+    const ov = packOverrides();
+    if (ov[amount] != null) return { price: +ov[amount], how: 'price you set' };
+
+    const t = tiers();
+    const exact = t.find(([r]) => r === amount);
+    if (exact) return { price: exact[1], how: `${fmt(exact[0])} R$ pack` };
+
+    // one row can cover several of the same pack bought together
+    for (let i = t.length - 1; i >= 0; i--) {
+      const [r, p] = t[i];
+      if (r > 0 && amount % r === 0) {
+        const n = amount / r;
+        if (n >= 2 && n <= 20) return { price: p * n, how: `${n} × ${fmt(r)} R$ pack` };
+      }
+    }
+    return null;
+  }
+
+  function moneyStats() {
+    const rows = state.records.filter(r => r.txType === 'CurrencyPurchase' && inRange(r) && r.amount > 0);
+    const packs = new Map(), unknown = new Map();
+    let paid = 0, matchedRows = 0, matchedRobux = 0, unmatchedRobux = 0;
+
+    for (const r of rows) {
+      const m = priceForPack(r.amount);
+      if (m) {
+        paid += m.price; matchedRows++; matchedRobux += r.amount;
+        const e = packs.get(r.amount) || { amount: r.amount, count: 0, unit: m.price, how: m.how, last: null };
+        e.count++;
+        const t = r.created ? new Date(r.created).getTime() : null;
+        if (t && (e.last === null || t > e.last)) e.last = t;
+        packs.set(r.amount, e);
+      } else {
+        unmatchedRobux += r.amount;
+        const e = unknown.get(r.amount) || { amount: r.amount, count: 0 };
+        e.count++; unknown.set(r.amount, e);
+      }
+    }
+    return {
+      rows, paid, matchedRows, matchedRobux, unmatchedRobux,
+      robux: matchedRobux + unmatchedRobux,
+      packs: [...packs.values()].sort((a, b) => (b.unit * b.count) - (a.unit * a.count)),
+      unknown: [...unknown.values()].sort((a, b) => b.count - a.count)
+    };
+  }
+
+  const tracksCurrency = () => cfg.types.includes('CurrencyPurchase');
+
+  /* ================================================================== *
+   * Insights
+   * ================================================================== */
+  function biggestPurchases(n) {
+    return spendRecords().filter(r => r.amount > 0)
+      .sort((a, b) => b.amount - a.amount).slice(0, n || 50);
+  }
+
+  // Items you went back for. The interesting number isn't the price, it's
+  // how much the repeats added up to.
+  function repeatBuys() {
+    const map = new Map();
+    for (const r of spendRecords()) {
+      if (!r.amount) continue;
+      const where = r.placeName || r.sellerName || '';
+      const key = (r.itemName || r.itemType || 'item') + '|' + where;
+      const e = map.get(key) || { name: r.itemName || r.itemType || 'Item', where, count: 0, total: 0, last: null, unit: r.amount };
+      e.count++; e.total += r.amount;
+      const t = r.created ? new Date(r.created).getTime() : null;
+      if (t && (e.last === null || t > e.last)) e.last = t;
+      map.set(key, e);
+    }
+    return [...map.values()].filter(e => e.count >= 2)
+      .map(e => Object.assign(e, { repeatSpend: e.total - (e.total / e.count) }))
+      .sort((a, b) => b.total - a.total);
+  }
+
+  // Spending by weekday and by hour — shows when the impulse buying happens.
+  function habitStats() {
+    const dow = new Array(7).fill(0), dowCount = new Array(7).fill(0);
+    const hour = new Array(24).fill(0);
+    const byDay = new Map();
+    for (const r of spendRecords()) {
+      if (!r.amount || !r.created) continue;
+      const d = new Date(r.created);
+      dow[d.getDay()] += r.amount; dowCount[d.getDay()]++;
+      hour[d.getHours()] += r.amount;
+      const k = d.toISOString().slice(0, 10);
+      byDay.set(k, (byDay.get(k) || 0) + r.amount);
+    }
+    let peakDay = null;
+    for (const [k, v] of byDay) if (!peakDay || v > peakDay.total) peakDay = { date: k, total: v };
+    return { dow, dowCount, hour, peakDay, activeDays: byDay.size };
+  }
+
+  /* ================================================================== *
+   * Year in review
+   * ================================================================== */
+  function yearsCovered() {
+    const set = new Set();
+    for (const r of state.records) if (r.created) set.add(new Date(r.created).getFullYear());
+    return [...set].sort((a, b) => b - a);
+  }
+
+  function yearReview(year) {
+    const isIn = r => r.created && new Date(r.created).getFullYear() === year;
+    const spend = state.records.filter(r => typeInfo(r.txType).kind === 'out' && isIn(r) && r.amount > 0);
+    const bought = state.records.filter(r => r.txType === 'CurrencyPurchase' && isIn(r) && r.amount > 0);
+
+    const total = spend.reduce((s, r) => s + r.amount, 0);
+    const games = sortGames(buildGames(spend)).slice(0, 5);
+
+    const items = new Map();
+    for (const r of spend) {
+      const k = r.itemName || r.itemType || 'Item';
+      const e = items.get(k) || { name: k, count: 0, total: 0 };
+      e.count++; e.total += r.amount; items.set(k, e);
+    }
+    const byCount = [...items.values()].sort((a, b) => b.count - a.count)[0] || null;
+    const bySpend = [...items.values()].sort((a, b) => b.total - a.total)[0] || null;
+
+    const days = new Map(), months = new Map();
+    for (const r of spend) {
+      const d = new Date(r.created);
+      const dk = d.toISOString().slice(0, 10);
+      days.set(dk, (days.get(dk) || 0) + r.amount);
+      const mk = d.getMonth();
+      months.set(mk, (months.get(mk) || 0) + r.amount);
+    }
+    let peakDay = null; for (const [k, v] of days) if (!peakDay || v > peakDay.total) peakDay = { date: k, total: v };
+    let peakMonth = null; for (const [k, v] of months) if (!peakMonth || v > peakMonth.total) peakMonth = { month: k, total: v };
+
+    // games seen for the first time this year
+    const before = new Set();
+    for (const r of state.records) {
+      if (!r.created || new Date(r.created).getFullYear() >= year) continue;
+      if (r.universeId) before.add(String(r.universeId));
+    }
+    const thisYear = new Set();
+    for (const r of spend) if (r.universeId) thisYear.add(String(r.universeId));
+    const newGames = [...thisYear].filter(u => !before.has(u)).length;
+
+    let paid = 0, unmatched = 0;
+    for (const r of bought) { const m = priceForPack(r.amount); if (m) paid += m.price; else unmatched += r.amount; }
+
+    return {
+      year, total, count: spend.length, games, byCount, bySpend,
+      peakDay, peakMonth, newGames, activeDays: days.size,
+      robuxBought: bought.reduce((s, r) => s + r.amount, 0), paid, unmatchedRobux: unmatched,
+      gameCount: thisYear.size
+    };
+  }
+
+  /* ================================================================== *
+   * Theme
+   * ================================================================== */
+  function siteTheme() {
+    try {
+      const b = document.body;
+      if (b && b.classList.contains('light-theme')) return 'light';
+      if (b && b.classList.contains('dark-theme')) return 'dark';
+      if (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+    } catch (e) {}
+    return 'dark';
+  }
+  function effectiveTheme() { return cfg.theme === 'auto' ? siteTheme() : cfg.theme; }
+  function applyTheme() {
+    if (panel) panel.setAttribute('data-theme', effectiveTheme());
   }
 
   /* ================================================================== *
@@ -1235,6 +1422,31 @@
     .rst-log{margin:0;padding:12px;background:rgba(0,0,0,.45);color:var(--tx2);border-radius:10px;max-height:220px;
       overflow:auto;font:11px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
 
+    /* ---------- money / year in review / habits ---------- */
+    .rst-money-top{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;}
+    .rst-money-top .rst-total{min-width:260px;}
+    .rst-money-top .rst-total .v{font-size:32px;}
+
+    .rst-wrap-hero{background:linear-gradient(135deg,rgba(0,162,255,.18),rgba(160,119,255,.14));
+      border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:16px;}
+    .rst-wrap-hero .k{font-size:12px;color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.4px;}
+    .rst-wrap-hero .v{display:flex;align-items:center;gap:10px;font-size:40px;font-weight:800;
+      letter-spacing:-1.5px;line-height:1.1;margin:4px 0 6px;}
+    .rst-wrap-hero .usd{font-size:13px;color:var(--tx2);}
+    .rst-wrap-hero .usd b{color:var(--tx);}
+    .rst-yearpick{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px;}
+
+    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;}
+    .rst-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+    .rst-card .t{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--tx2);font-weight:700;}
+    .rst-card .b{font-size:17px;font-weight:700;margin:5px 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-card .s{font-size:12.5px;color:var(--tx2);}
+
+    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;}
+    .rst-habit .t{font-size:12.5px;color:var(--tx2);margin-bottom:8px;}
+    .rst-habit b{color:var(--tx);}
+    .rst-cats{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 12px;}
+
     /* ---------- troubleshoot modal ---------- */
     #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.7);display:none;
       align-items:center;justify-content:center;padding:20px;}
@@ -1299,7 +1511,7 @@
 
   // size: 16 | 28 — matches the sizes Roblox itself defines
   function robuxGlyph(size) {
-    if (cfg.theme === 'dark' && spriteAvailable()) {
+    if (effectiveTheme() === 'dark' && spriteAvailable()) {
       return `<span class="icon-robux-${size || 16}x${size || 16} rst-rbxs"></span>`;
     }
     return `<span class="rst-rbx">${ICONS.robux}</span>`;
@@ -1408,7 +1620,7 @@
     overlay = document.createElement('div');
     overlay.id = 'rst-overlay';
     overlay.innerHTML = `
-      <div id="rst-panel" data-theme="${cfg.theme}">
+      <div id="rst-panel" data-theme="${effectiveTheme()}">
 
         <header class="rst-top">
           <div class="rst-brand">
@@ -1441,8 +1653,10 @@
         <nav class="rst-tabs">
           <button class="rst-tab on" data-tab="games">Games</button>
           <button class="rst-tab" data-tab="items">Items</button>
+          <button class="rst-tab" data-tab="money">Money</button>
           <button class="rst-tab" data-tab="timeline">Timeline</button>
           <button class="rst-tab" data-tab="sellers">Creators</button>
+          <button class="rst-tab" data-tab="year">Year in review</button>
         </nav>
 
         <div class="rst-tools">
@@ -1529,8 +1743,14 @@
               </div>
               <label class="rst-switch"><input type="checkbox" id="rst-merge" ${cfg.smartMerge ? 'checked' : ''}>
                 <span>Group loose purchases by creator<span class="sub">Attaches purchases with no game info to that creator's game when there's only one</span></span></label>
-              <label class="rst-switch"><input type="checkbox" id="rst-theme-sw" ${cfg.theme === 'light' ? 'checked' : ''}>
-                <span>Light theme</span></label>
+              <div class="row" style="margin-top:10px">
+                <span class="rst-flabel">Theme</span>
+                <select class="rst-select" id="rst-theme-sel">
+                  <option value="auto">Match Roblox</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </div>
             </div>
 
             <div class="rst-set">
@@ -1723,6 +1943,12 @@
     ];
     if (income.length) cards.unshift(msCard('Robux in', rbx(inTotal), 'bought or earned'));
 
+    // What the Robux actually cost, reconciled from the packs you bought.
+    const mon = tracksCurrency() ? moneyStats() : null;
+    if (mon && mon.paid > 0) {
+      cards.unshift(msCard('Really paid', moneyStr(mon.paid), 'for Robux, all in'));
+    }
+
     // category split, biggest first — fills out the total card and is genuinely useful
     const catTotals = new Map();
     for (const r of spend) {
@@ -1743,7 +1969,9 @@
       <div class="rst-total">
         <div class="k">Total spent · ${rangeLabel()}</div>
         <div class="v">${robuxGlyph(28)}${fmt(total)}</div>
-        ${cfg.showUsd ? `<div class="usd">that's about <b>${usd(total)}</b> of Robux${cfg.premium ? ' at Premium pack prices' : ''}</div>` : ''}
+        ${cfg.showUsd ? `<div class="usd">${mon && mon.paid > 0
+            ? `worth about <b>${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b> at what you actually paid per Robux`
+            : `that's about <b>${usd(total)}</b> of Robux`}</div>` : ''}
         ${split}
       </div>
       <div class="rst-mini-stats">${cards.join('')}</div>`;
@@ -1802,15 +2030,21 @@
       return;
     }
 
+    // search/sort/range only apply to the list views
+    const tools = panel.querySelector('.rst-tools');
+    if (tools) tools.style.display = (ui.tab === 'money' || ui.tab === 'year') && !ui.gameKey ? 'none' : 'flex';
+
     if (ui.gameKey) { renderGameDetail(body); return; }
     if (ui.tab === 'games') renderGames(body);
     else if (ui.tab === 'items') renderItems(body);
+    else if (ui.tab === 'money') renderMoney(body);
     else if (ui.tab === 'timeline') renderTimeline(body);
+    else if (ui.tab === 'year') renderYear(body);
     else renderSellers(body);
   }
 
   function renderGames(body) {
-    const recs = spendRecords();
+    const recs = ui.cat ? spendRecords().filter(r => categoryOf(r.itemType) === ui.cat) : spendRecords();
     const games = sortGames(buildGames(recs));
     const shown = games.filter(g => matchesQuery(g, ui.q));
     const grand = games.reduce((s, g) => s + g.total, 0) || 1;
@@ -1829,7 +2063,16 @@
       return;
     }
 
-    let html = `<div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'}${ui.q ? ' matching' : ''} ·
+    const allCats = new Map();
+    for (const g of games) for (const [c, v] of g.cats) allCats.set(c, (allCats.get(c) || 0) + v);
+    const catChips = [...allCats.entries()].sort((a, b) => b[1] - a[1]);
+
+    let html = catChips.length > 1 ? `<div class="rst-cats">
+      <span class="rst-type ${!ui.cat ? 'on' : ''}" data-cat="">Everything</span>
+      ${catChips.map(([c, v]) => `<span class="rst-type ${ui.cat === c ? 'on' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c)} · ${fmt(v)}</span>`).join('')}
+    </div>` : '';
+
+    html += `<div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'}${ui.q ? ' matching' : ''} ·
       <b style="color:var(--money)">${fmt(shownTotal)} R$</b>${cfg.showUsd ? ` (about ${usd(shownTotal)})` : ''}</div>`;
 
     shown.slice(0, 300).forEach((g, i) => {
@@ -1961,7 +2204,40 @@
           <td class="r g">${fmt(i.total)}</td>
           <td class="r" style="color:var(--tx2)">${dstr(i.last)}</td></tr>`).join('')}
       </tbody></table>
-      ${items.length > 500 ? `<div class="rst-note">Showing top 500 of ${fmt(items.length)} distinct items.</div>` : ''}`;
+      ${items.length > 500 ? `<div class="rst-note">Showing top 500 of ${fmt(items.length)} distinct items.</div>` : ''}
+      ${repeatsHtml()}${biggestHtml()}`;
+  }
+
+  // Things you bought more than once, ranked by what the repeats cost you.
+  function repeatsHtml() {
+    const rep = repeatBuys().slice(0, 20);
+    if (!rep.length) return '';
+    return `<div class="rst-secttl"><b>You went back for these</b></div>
+      <table class="rst-table">
+        <thead><tr><th>Item</th><th>Where</th><th class="r">Times</th><th class="r">Each</th><th class="r">Total</th></tr></thead>
+        <tbody>${rep.map(r => `
+          <tr><td><b>${escapeHtml(r.name)}</b></td>
+            <td style="color:var(--tx2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.where || '—')}</td>
+            <td class="r"><b>×${fmt(r.count)}</b></td>
+            <td class="r">${fmt(r.total / r.count)}</td>
+            <td class="r g">${fmt(r.total)}</td></tr>`).join('')}
+        </tbody></table>`;
+  }
+
+  // The single transactions that actually moved the needle.
+  function biggestHtml() {
+    const big = biggestPurchases(25);
+    if (!big.length) return '';
+    return `<div class="rst-secttl"><b>Biggest single purchases</b></div>
+      <table class="rst-table">
+        <thead><tr><th>#</th><th>Item</th><th>Game</th><th class="r">Robux</th><th class="r">When</th></tr></thead>
+        <tbody>${big.map((r, i) => `
+          <tr><td style="color:var(--tx2)">${i + 1}</td>
+            <td><b>${escapeHtml(r.itemName || r.itemType || 'Item')}</b></td>
+            <td style="color:var(--tx2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.placeName || r.sellerName || '—')}</td>
+            <td class="r g">${fmt(r.amount)}</td>
+            <td class="r" style="color:var(--tx2)">${dstr(r.created)}</td></tr>`).join('')}
+        </tbody></table>`;
   }
 
   function renderTimeline(body) {
@@ -2002,7 +2278,8 @@
           <tr><td>${m.date.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</td>
           <td class="r">${fmt(m.count)}</td><td class="r g">${fmt(m.total)}</td>
           ${cfg.showUsd ? `<td class="r">${usd(m.total)}</td>` : ''}</tr>`).join('')}
-        </tbody></table>`;
+        </tbody></table>
+      ${habitsHtml()}`;
   }
 
   function renderSellers(body) {
@@ -2034,6 +2311,211 @@
           <td class="r g">${fmt(s.total)}</td>${cfg.showUsd ? `<td class="r">${usd(s.total)}</td>` : ''}
           <td class="r" style="color:var(--tx2)">${dstr(s.last)}</td></tr>`).join('')}
       </tbody></table>`;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Money — what you actually paid, reconciled from your Robux purchases
+   * ------------------------------------------------------------------ */
+  function renderMoney(body) {
+    if (!tracksCurrency()) {
+      body.innerHTML = `<div class="rst-empty">
+        <div class="ico">${ICONS.logo}</div>
+        <h3>Find out what you really paid</h3>
+        <p>Your Robux purchases record the exact pack you bought each time, and pack sizes map
+           straight onto prices. Track them and this stops being an estimate — it becomes the
+           actual amount of money that left your account.</p>
+        <button class="rst-cta" data-act="enable-currency">Track my Robux purchases</button>
+        <div class="rst-note">Adds one more pass over your history. Same read-only access as everything else.</div>
+      </div>`;
+      return;
+    }
+
+    const m = moneyStats();
+    if (!m.rows.length) {
+      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
+        <h3>No Robux purchases found yet</h3>
+        <p>Currency purchases are switched on, but none are stored. Run
+        <b>Rescan everything</b> from the ⋯ menu to pull them in.</p></div>`;
+      return;
+    }
+
+    const spendTotal = spendRecords().reduce((s, r) => s + r.amount, 0);
+    const rate = m.matchedRobux ? (m.paid / m.matchedRobux) * 1000 : 0;
+    const spentValue = rate ? (spendTotal / 1000) * rate : 0;
+
+    let html = `
+      <div class="rst-money-top">
+        <div class="rst-total" style="flex:1">
+          <div class="k">You actually paid</div>
+          <div class="v">${moneyStr(m.paid)}</div>
+          <div class="usd">${fmt(m.matchedRobux)} R$ bought across ${fmt(m.matchedRows)} purchases${
+            m.unmatchedRobux ? ` · <b style="color:var(--warn)">${fmt(m.unmatchedRobux)} R$ unmatched</b>` : ''}</div>
+        </div>
+        <div class="rst-mini-stats" style="flex:1.4">
+          ${msCard('Your real rate', moneyStr(rate), 'per 1,000 R$')}
+          ${msCard('Spent in games', rbx(spendTotal), rate ? 'worth ' + moneyStr(spentValue) : '')}
+          ${msCard('Still unspent', rbx(Math.max(0, m.robux - spendTotal)), 'bought but not spent')}
+          ${msCard('Purchases', fmt(m.rows.length), 'Robux top-ups')}
+        </div>
+      </div>`;
+
+    if (m.unknown.length) {
+      html += `<div class="rst-secttl"><b>Unmatched packs</b> — ${fmt(m.unmatchedRobux)} R$ not counted above</div>
+        <div class="rst-note" style="margin:0 0 10px">
+          These amounts don't match any pack we know — usually gift cards, promos, or prices from a
+          region or platform with different bundles. Type what you paid and it gets included everywhere.
+        </div>
+        <table class="rst-table">
+          <thead><tr><th>Robux</th><th class="r">Times</th><th class="r">What you paid, each</th></tr></thead>
+          <tbody>${m.unknown.slice(0, 40).map(u => `
+            <tr><td><b>${fmt(u.amount)} R$</b></td><td class="r">${fmt(u.count)}</td>
+              <td class="r"><input class="rst-num" type="number" min="0" step="0.01"
+                data-pack="${u.amount}" placeholder="${currencySymbol()}0.00"
+                value="${packOverrides()[u.amount] != null ? packOverrides()[u.amount] : ''}"></td></tr>`).join('')}
+          </tbody></table>`;
+    }
+
+    html += `<div class="rst-secttl"><b>Packs you bought</b></div>
+      <table class="rst-table">
+        <thead><tr><th>Pack</th><th>Matched as</th><th class="r">Times</th><th class="r">Each</th>
+          <th class="r">Total</th><th class="r">Last</th></tr></thead>
+        <tbody>${m.packs.map(p => `
+          <tr><td><b>${fmt(p.amount)} R$</b></td>
+            <td style="color:var(--tx2)">${escapeHtml(p.how)}</td>
+            <td class="r">${fmt(p.count)}</td>
+            <td class="r">${moneyStr(p.unit)}</td>
+            <td class="r g">${moneyStr(p.unit * p.count)}</td>
+            <td class="r" style="color:var(--tx2)">${dstr(p.last)}</td></tr>`).join('')}
+        </tbody></table>`;
+
+    // money paid per calendar year
+    const years = new Map();
+    for (const r of m.rows) {
+      if (!r.created) continue;
+      const y = new Date(r.created).getFullYear();
+      const price = priceForPack(r.amount);
+      const e = years.get(y) || { paid: 0, robux: 0, count: 0 };
+      if (price) e.paid += price.price;
+      e.robux += r.amount; e.count++;
+      years.set(y, e);
+    }
+    if (years.size) {
+      html += `<div class="rst-secttl"><b>By year</b></div>
+        <table class="rst-table">
+          <thead><tr><th>Year</th><th class="r">Top-ups</th><th class="r">Robux</th><th class="r">Paid</th></tr></thead>
+          <tbody>${[...years.entries()].sort((a, b) => b[0] - a[0]).map(([y, e]) => `
+            <tr><td><b>${y}</b></td><td class="r">${fmt(e.count)}</td>
+              <td class="r">${fmt(e.robux)}</td><td class="r g">${moneyStr(e.paid)}</td></tr>`).join('')}
+          </tbody></table>`;
+    }
+
+    html += `<div class="rst-note">Gift cards and promos are counted at the pack price they match.
+      Free Robux — Premium stipends, payouts, trades — is never counted as money.</div>`;
+    body.innerHTML = html;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Year in review
+   * ------------------------------------------------------------------ */
+  function renderYear(body) {
+    const years = yearsCovered();
+    if (!years.length) { body.innerHTML = `<div class="rst-empty">Nothing dated to summarise yet.</div>`; return; }
+    if (!ui.year || !years.includes(ui.year)) ui.year = years[0];
+    const y = yearReview(ui.year);
+
+    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+      'August', 'September', 'October', 'November', 'December'];
+
+    let html = `<div class="rst-yearpick">${years.map(v =>
+      `<span class="rst-type ${v === ui.year ? 'on' : ''}" data-year="${v}">${v}</span>`).join('')}</div>`;
+
+    if (!y.count) {
+      html += `<div class="rst-empty"><h3>Nothing spent in ${y.year}</h3>
+        <p>No purchases are recorded for that year.</p></div>`;
+      body.innerHTML = html;
+      return;
+    }
+
+    html += `
+      <div class="rst-wrap-hero">
+        <div class="k">In ${y.year} you spent</div>
+        <div class="v">${robuxGlyph(28)}${fmt(y.total)}</div>
+        <div class="usd">across ${fmt(y.count)} purchases in ${fmt(y.gameCount)} games${
+          y.paid ? ` · you paid <b>${moneyStr(y.paid)}</b> for Robux that year` : ''}</div>
+      </div>
+
+      <div class="rst-mini-stats" style="margin-bottom:16px">
+        ${msCard('Games', fmt(y.gameCount), y.newGames ? `${fmt(y.newGames)} new that year` : '')}
+        ${msCard('Days active', fmt(y.activeDays), 'days with a purchase')}
+        ${msCard('Per active day', rbx(y.activeDays ? y.total / y.activeDays : 0), 'average')}
+        ${y.peakMonth ? msCard('Biggest month', rbx(y.peakMonth.total), MONTHS[y.peakMonth.month]) : ''}
+        ${y.peakDay ? msCard('Biggest day', rbx(y.peakDay.total), dstr(y.peakDay.date)) : ''}
+      </div>`;
+
+    if (y.games.length) {
+      html += `<div class="rst-secttl"><b>Where it went</b></div>`;
+      y.games.forEach((g, i) => {
+        const pct = (g.total / y.total) * 100;
+        html += `
+          <div class="rst-game" data-game="${escapeHtml(g.key)}">
+            <div class="rank">${i + 1}</div>
+            <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
+            <div class="nm"><b>${escapeHtml(g.label)}</b>
+              <div class="meta">${fmt(g.count)} purchases · ${pct.toFixed(1)}% of ${y.year}</div>
+              <div class="rst-meter"><i style="width:${Math.max(2, pct)}%"></i></div></div>
+            <div class="amt"><b>${robuxGlyph(16)}${fmt(g.total)}</b></div>
+          </div>`;
+      });
+      fetchIcons(y.games.map(g => g.universeId)).then(paintIcons);
+    }
+
+    if (y.byCount || y.bySpend) {
+      html += `<div class="rst-secttl"><b>Standouts</b></div><div class="rst-cards">`;
+      if (y.byCount) html += `<div class="rst-card">
+        <div class="t">Bought most often</div>
+        <div class="b">${escapeHtml(y.byCount.name)}</div>
+        <div class="s">${fmt(y.byCount.count)} times · ${fmt(y.byCount.total)} R$ in total</div></div>`;
+      if (y.bySpend) html += `<div class="rst-card">
+        <div class="t">Took the most Robux</div>
+        <div class="b">${escapeHtml(y.bySpend.name)}</div>
+        <div class="s">${fmt(y.bySpend.total)} R$ over ${fmt(y.bySpend.count)} purchase(s)</div></div>`;
+      html += `</div>`;
+    }
+
+    body.innerHTML = html;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Habits — when the spending happens
+   * ------------------------------------------------------------------ */
+  function habitsHtml() {
+    const h = habitStats();
+    const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const maxD = Math.max(...h.dow) || 1, maxH = Math.max(...h.hour) || 1;
+    const topDay = h.dow.indexOf(maxD), topHour = h.hour.indexOf(maxH);
+
+    return `
+      <div class="rst-secttl"><b>When you spend</b></div>
+      <div class="rst-habits">
+        <div class="rst-habit">
+          <div class="t">By day of week — busiest is <b>${DAYS[topDay]}</b></div>
+          <div class="rst-chart" style="height:130px">
+            ${h.dow.map((v, i) => `<div class="bar${v ? '' : ' zero'}" style="height:${Math.max(2, (v / maxD) * 100)}%"
+              title="${DAYS[i]}: ${fmt(v)} R$ over ${fmt(h.dowCount[i])} purchases"></div>`).join('')}
+          </div>
+          <div class="rst-axis">${DAYS.map(d => `<span>${d}</span>`).join('')}</div>
+        </div>
+        <div class="rst-habit">
+          <div class="t">By hour — peak around <b>${topHour}:00</b></div>
+          <div class="rst-chart" style="height:130px">
+            ${h.hour.map((v, i) => `<div class="bar${v ? '' : ' zero'}" style="height:${Math.max(2, (v / maxH) * 100)}%"
+              title="${i}:00 — ${fmt(v)} R$"></div>`).join('')}
+          </div>
+          <div class="rst-axis"><span>00:00</span><span>12:00</span><span>23:00</span></div>
+        </div>
+      </div>
+      <div class="rst-note">${fmt(h.activeDays)} separate days with a purchase${
+        h.peakDay ? ` · heaviest single day was ${dstr(h.peakDay.date)} at ${fmt(h.peakDay.total)} R$` : ''}.</div>`;
   }
 
   /* ------------------------------------------------------------------ *
@@ -2128,11 +2610,15 @@
     $('#rst-close').onclick = closePanel;
     overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
 
-    $('#rst-theme-sw').addEventListener('change', e => {
-      cfg.theme = e.target.checked ? 'light' : 'dark';
-      panel.setAttribute('data-theme', cfg.theme);
-      saveCfg();
+    $('#rst-theme-sel').value = cfg.theme;
+    $('#rst-theme-sel').addEventListener('change', e => {
+      cfg.theme = e.target.value; saveCfg(); applyTheme(); render();
     });
+    // follow the site when set to match it
+    try {
+      new MutationObserver(() => { if (cfg.theme === 'auto') applyTheme(); })
+        .observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    } catch (e) {}
     $('#rst-turbo').addEventListener('change', e => { cfg.turbo = e.target.checked; saveCfg(); });
 
     // clicking anywhere else dismisses the overflow menu
@@ -2173,6 +2659,10 @@
         else if (act === 'settings') document.getElementById('rst-sheet').classList.add('on');
         else if (act === 'closesheet') document.getElementById('rst-sheet').classList.remove('on');
         else if (act === 'dismiss') clearToast();
+        else if (act === 'enable-currency') {
+          if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
+          saveCfg(); renderTypeBar(); runScan('full');
+        }
         else if (act === 'scan') runScan('full');
         else if (act === 'update') runScan('update');
         else if (act === 'resume') runScan('resume');
@@ -2192,6 +2682,12 @@
         }
         return;
       }
+
+      const yearEl = e.target.closest('[data-year]');
+      if (yearEl) { ui.year = parseInt(yearEl.getAttribute('data-year'), 10); render(); return; }
+
+      const catEl = e.target.closest('[data-cat]');
+      if (catEl) { ui.cat = catEl.getAttribute('data-cat') || null; render(); return; }
 
       const typeEl = e.target.closest('[data-type]');
       if (typeEl) {
@@ -2263,6 +2759,18 @@
       cfg.curPer1000 = (isFinite(v) && v > 0) ? v : 9.99;
       e.target.value = cfg.curPer1000; saveCfg(); refreshPricingUI(); render();
     });
+    // manual price for a pack we couldn't match
+    panel.addEventListener('change', e => {
+      const el = e.target.closest('[data-pack]');
+      if (!el) return;
+      const amount = el.getAttribute('data-pack');
+      const v = parseFloat(el.value);
+      const ov = store.get('packOverrides', {});
+      if (isFinite(v) && v > 0) ov[amount] = v; else delete ov[amount];
+      store.set('packOverrides', ov);
+      render();
+    });
+
     $('#rst-refpack').addEventListener('change', e => { cfg.refRobux = parseInt(e.target.value, 10) || 1000; saveCfg(); refreshPricingUI(); render(); });
     refreshPricingUI();
   }

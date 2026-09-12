@@ -1,5 +1,6 @@
 node_modules/
 *.zip
 store-screenshots/
+.patch/
 .DS_Store
 Thumbs.db

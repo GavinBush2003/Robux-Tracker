@@ -11,15 +11,23 @@ It runs entirely in your browser. Nothing is uploaded anywhere.
 
 ## What it does
 
-- **Per-game totals** — every game you've spent in, ranked, with icons and share-of-total.
-- **Per-item breakdown** — open a game to see `Gifting VIP ×44 — 35,200 R$`, split into
+- **What you actually paid.** Your Robux purchases record the exact pack you bought, and pack
+  sizes map one-to-one onto prices — so the money figure is reconciled from real purchases
+  rather than estimated at some average rate. Anything that can't be matched (gift cards,
+  regional promos) is shown as unmatched and you can price it yourself.
+- **Per-game totals** — every game you've spent in, ranked, with icons and share-of-total,
+  filterable by category.
+- **Per-item breakdown** — open a game to see `Gifting VIP x44 - 35,200 R$`, split into
   Game Passes / Developer Products / Private Servers / Bundles / Catalog. Click any item
   for every individual purchase and its date.
-- **Real money values** — reads the package prices off your own Buy Robux page, so totals
-  show in your currency at your region's prices. Falls back to built-in US pricing, and
-  you can override the currency and rate by hand.
+- **Year in review** — pick any year and get the total, your top five games, the item you
+  bought most, your biggest single day, and how many games were new to you that year.
+- **Insights** — the items you kept going back for and what the repeats cost, your biggest
+  single purchases, and when you spend: by weekday and by hour.
 - **Timeline** — monthly spend chart plus per-year and per-month tables.
 - **Creators** — which developers and groups actually received your Robux.
+- **Local currency** — reads the package prices off your own Buy Robux page, so everything
+  shows in your currency at your region's prices. Or set a rate by hand.
 - **Incremental updates** — the first scan reads your whole history; after that
   "Check for new" only reads what changed.
 - **Export** — CSV or JSON, all of it or one game at a time.
@@ -67,9 +75,9 @@ telemetry, and no network request to anywhere other than roblox.com. See [PRIVAC
 
 - Roblox only exposes a limited window of transaction history through this API. If your
   oldest purchases are missing, they aren't available to read.
-- Money values are an **estimate**. Robux is priced in packs, not per unit, so the app
-  values your spend at a single reference pack (the 1,000 R$ / $9.99 tier by default).
-  You can change which pack in Settings.
+- The **Money** tab is reconciled from real purchases and is as accurate as the pack data
+  allows. Elsewhere, Robux amounts are valued at a single reference pack (the 1,000 R$ tier
+  by default, changeable in Settings) because Robux is priced in packs, not per unit.
 - Some purchases come back without game information. With "group by creator" on, those
   are attached to that creator's game when they only have one; such groups are labelled.
 
