@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Robux Tracker — see where your Robux went
 // @namespace    robuxtracker.app
-// @version      6.0.0
+// @version      6.0.1
 // @description  See where your Robux actually went. Reads your own purchase history and breaks it down per game, per category and per item ("Gifting VIP x44"), with real local pricing, a spending timeline and CSV/JSON export. Unofficial; not affiliated with Roblox Corporation.
 // @author       Gavin
 // @match        https://www.roblox.com/*
@@ -21,8 +21,19 @@
 (function () {
   'use strict';
 
-  if (window.__rstProLoaded) return;
-  window.__rstProLoaded = true;
+  // Every version has used this same guard, so an older copy still enabled in
+  // Tampermonkey wins the race and the newer one silently does nothing. Say so
+  // out loud instead of looking like the update didn't apply.
+  const VERSION = '6.0.1';
+  if (window.__rstProLoaded) {
+    try {
+      console.warn(`[Robux Tracker] v${VERSION} did not start — v${window.__rstProLoaded} ` +
+        `is already running on this page. Disable or delete the older script in your userscript ` +
+        `manager (look for "Roblox Spend Tracker" or "Coinsight"), then reload.`);
+    } catch (e) {}
+    return;
+  }
+  window.__rstProLoaded = VERSION;
 
   /* ================================================================== *
    * Storage
@@ -695,7 +706,7 @@
     if (state.running) { setStatus('Wait for the current scan to finish.'); return; }
     const out = [];
     out.push('Robux Tracker — diagnostics ' + new Date().toISOString());
-    out.push('script v6.0.0 · page ' + location.pathname);
+    out.push('script v' + VERSION + ' · page ' + location.pathname);
     try {
       if (!state.me) state.me = await getAuthedUser();
       out.push(`logged in as ${state.me.name} (#${state.me.id})`);
