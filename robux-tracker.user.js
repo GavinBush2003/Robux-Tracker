@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Robux Tracker — see where your Robux went
 // @namespace    robuxtracker.app
-// @version      7.0.0
+// @version      8.0.0
 // @description  See where your Robux actually went. Reads your own purchase history and breaks it down per game, per category and per item ("Gifting VIP x44"), with real local pricing, a spending timeline and CSV/JSON export. Unofficial; not affiliated with Roblox Corporation.
 // @author       Gavin
 // @match        https://www.roblox.com/*
@@ -24,7 +24,7 @@
   // Every version has used this same guard, so an older copy still enabled in
   // Tampermonkey wins the race and the newer one silently does nothing. Say so
   // out loud instead of looking like the update didn't apply.
-  const VERSION = '7.0.0';
+  const VERSION = '8.0.0';
   if (window.__rstProLoaded) {
     try {
       console.warn(`[Robux Tracker] v${VERSION} did not start — v${window.__rstProLoaded} ` +
@@ -689,7 +689,7 @@
     for (let i = 0; i < need.length; i += 50) {
       const chunk = need.slice(i, i + 50);
       try {
-        const r = await fetch(`https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(',')}&size=150x150&format=Png&isCircular=false`);
+        const r = await fetch(`https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(',')}&size=512x512&format=Png&isCircular=false`);
         if (!r.ok) continue;
         const j = await r.json();
         (j.data || []).forEach(d => { if (d.state === 'Completed' && d.imageUrl) ui.iconCache[String(d.targetId)] = d.imageUrl; });
@@ -1512,7 +1512,9 @@
 
   const ICONS = {
     // a spend-breakdown pie: reads as "where your Robux went"
-    logo: SVG('<circle cx="12" cy="12" r="8.6"/><path d="M12 12V3.4"/><path d="M12 12l7.4 4.3"/>'),
+    // a donut with one segment filled — matches the app icon, and reads as a
+    // breakdown rather than the clock the old spoked version looked like
+    logo: SVG('<circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.6A8.4 8.4 0 0 1 20.4 12h-5a3.5 3.5 0 0 0-3.4-3.4Z" fill="currentColor" stroke="none"/>'),
     close: SVG('<path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6"/>'),
     gear: SVG('<circle cx="12" cy="12" r="3.1"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z"/>'),
     dots: SVG('<circle cx="12" cy="5.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor" stroke="none"/>'),
@@ -1523,7 +1525,7 @@
     trash: SVG('<path d="M4.5 7h15"/><path d="M9.5 7V5.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7"/><path d="M6.5 7l.8 12a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9l.8-12"/>'),
     wrench: SVG('<path d="M14.8 6.2a4.5 4.5 0 0 0 5.9 5.9l-8.4 8.4a2.1 2.1 0 0 1-3-3l8.4-8.4"/><path d="M14.8 6.2 17.9 3"/>'),
     back: SVG('<path d="M15 5.5 8.5 12l6.5 6.5"/>'),
-    pie: SVG('<circle cx="12" cy="12" r="8.6"/><path d="M12 12V3.4"/><path d="M12 12l7.4 4.3"/>'),
+    pie: SVG('<circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.6A8.4 8.4 0 0 1 20.4 12h-5a3.5 3.5 0 0 0-3.4-3.4Z" fill="currentColor" stroke="none"/>'),
     grid: SVG('<rect x="3.6" y="3.6" width="7" height="7" rx="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="1.6"/>'),
     coin: SVG('<ellipse cx="12" cy="6.6" rx="7.4" ry="3"/><path d="M4.6 6.6v10.8c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3V6.6"/><path d="M4.6 12c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3"/>'),
     tag: SVG('<path d="M3.8 11.3V4.6a.8.8 0 0 1 .8-.8h6.7c.2 0 .4.1.6.2l8 8a.8.8 0 0 1 0 1.2l-6.5 6.5a.8.8 0 0 1-1.2 0l-8-8a.8.8 0 0 1-.4-.4Z"/><circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none"/>'),
@@ -1790,74 +1792,17 @@
     else if (ui.tab === 'ledger') renderLedger(body);
     else if (ui.tab === 'customize') renderCustomize(body);
     else renderSellers(body);
+    afterRender();
   }
 
-  function renderGames(body) {
-    const recs = ui.cat ? activeSpend().filter(r => categoryOf(r.itemType) === ui.cat) : activeSpend();
-    const games = sortGames(buildGames(recs));
-    const shown = games.filter(g => matchesQuery(g, ui.q));
-    const grand = games.reduce((s, g) => s + g.total, 0) || 1;
-    const shownTotal = shown.reduce((s, g) => s + g.total, 0);
-
-    if (!games.length) {
-      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
-        <h3>Nothing here looks like game spending</h3>
-        <p>${fmt(state.records.length)} records are stored, but none of them carry a Robux amount.
-        Open Settings and make sure <b>Purchases</b> is switched on, then rescan.</p></div>`;
-      return;
-    }
-    if (!shown.length) {
-      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
-        <h3>No matches</h3><p>Nothing matches “${escapeHtml(ui.q)}”.</p></div>`;
-      return;
-    }
-
-    const allCats = new Map();
-    for (const g of games) for (const [c, v] of g.cats) allCats.set(c, (allCats.get(c) || 0) + v);
-    const catChips = [...allCats.entries()].sort((a, b) => b[1] - a[1]);
-
-    let html = catChips.length > 1 ? `<div class="rst-cats">
-      <span class="rst-type ${!ui.cat ? 'on' : ''}" data-cat="">Everything</span>
-      ${catChips.map(([c, v]) => `<span class="rst-type ${ui.cat === c ? 'on' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c)} · ${fmt(v)}</span>`).join('')}
-    </div>` : '';
-
-    html += `<div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'}${ui.q ? ' matching' : ''} ·
-      <b style="color:var(--money)">${fmt(shownTotal)} R$</b>${cfg.showUsd ? ` (about ${usd(shownTotal)})` : ''}</div>`;
-
-    shown.slice(0, 300).forEach((g, i) => {
-      const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
-      const chips = cats.slice(0, 3).map(([c, v]) => `<span class="rst-chip ${catChipClass(c)}">${escapeHtml(c)} ${fmt(v)}</span>`).join('');
-      const inf = g.hasInferred ? '<span class="rst-chip inf">grouped by creator</span>' : '';
-      const pct = (g.total / grand) * 100;
-      html += `
-        <div class="rst-game" data-game="${escapeHtml(g.key)}">
-          <div class="rank">${i + 1}</div>
-          <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
-          <div class="nm">
-            <b>${escapeHtml(g.label)}</b>
-            <div class="meta">${fmt(g.count)} ${g.count === 1 ? 'purchase' : 'purchases'} ·
-              ${fmt(g.items.size)} ${g.items.size === 1 ? 'item' : 'different items'} · last ${ago(g.last)}</div>
-            <div class="rst-chips">${chips}${inf}</div>
-            <div class="rst-meter"><i style="width:${Math.max(2, pct)}%"></i></div>
-          </div>
-          <div class="amt">
-            <b>${robuxGlyph(16)}${fmt(g.total)}</b>
-            <small>${cfg.showUsd ? usd(g.total) + ' · ' : ''}${pct.toFixed(1)}%</small>
-          </div>
-        </div>`;
-    });
-
-    if (shown.length > 300) html += `<div class="rst-note">Showing the top 300 of ${fmt(shown.length)} groups.</div>`;
-    const r = dateRange(recs);
-    if (r.min) html += `<div class="rst-note">History returned by Roblox spans ${dstr(r.min)} → ${dstr(r.max)}.</div>`;
-
-    body.innerHTML = html;
-    fetchIcons(shown.slice(0, 120).map(g => g.universeId)).then(paintIcons);
-  }
 
   function renderGameDetail(body) {
     const g = buildGames(spendRecords(), true).find(x => x.key === ui.gameKey);
     if (!g) { ui.gameKey = null; render(); return; }
+    // name the page after the game rather than a generic label
+    const ttl = $('#rst-title'), sb = $('#rst-pagesub');
+    if (ttl) ttl.textContent = g.label;
+    if (sb) sb.textContent = `${fmt(g.count)} purchases · ${fmt(g.items.size)} different items`;
 
     const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
     const items = [...g.items.values()].sort((a, b) => b.total - a.total || b.count - a.count);
@@ -1934,30 +1879,6 @@
     fetchIcons([g.universeId]).then(paintIcons);
   }
 
-  function renderItems(body) {
-    let items = allItems(spendRecords());
-    if (ui.q) items = items.filter(i => i.name.toLowerCase().includes(ui.q) || (i.game || '').toLowerCase().includes(ui.q) || i.cat.toLowerCase().includes(ui.q));
-    items.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
-      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
-
-    if (!items.length) { body.innerHTML = `<div class="rst-empty">Nothing matches.</div>`; return; }
-
-    body.innerHTML = `<table class="rst-table">
-      <thead><tr><th>#</th><th>Item</th><th>Category</th><th>Where</th>
-        <th class="r">Bought</th><th class="r">Each</th><th class="r">Total</th><th class="r">Last</th></tr></thead>
-      <tbody>${items.slice(0, 500).map((i, n) => `
-        <tr><td style="color:var(--tx2)">${n + 1}</td>
-          <td><b>${escapeHtml(i.name)}</b></td>
-          <td><span class="rst-chip ${catChipClass(i.cat)}">${escapeHtml(i.cat)}</span></td>
-          <td style="color:var(--tx2);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(i.game || '—')}</td>
-          <td class="r"><b>×${fmt(i.count)}</b></td>
-          <td class="r">${fmt(i.total / i.count)}</td>
-          <td class="r g">${fmt(i.total)}</td>
-          <td class="r" style="color:var(--tx2)">${dstr(i.last)}</td></tr>`).join('')}
-      </tbody></table>
-      ${items.length > 500 ? `<div class="rst-note">Showing top 500 of ${fmt(items.length)} distinct items.</div>` : ''}
-      ${repeatsHtml()}${biggestHtml()}`;
-  }
 
   // Things you bought more than once, ranked by what the repeats cost you.
   function repeatsHtml() {
@@ -2033,402 +1954,7 @@
       ${cumulativeHtml()}${compareHtml()}${habitsHtml()}`;
   }
 
-  function renderSellers(body) {
-    const map = new Map();
-    for (const r of activeSpend()) {
-      if (!r.amount) continue;
-      const key = r.sellerId != null ? String(r.sellerId) : (r.sellerName || 'unknown');
-      const e = map.get(key) || { id: r.sellerId, name: r.sellerName || 'Unknown', total: 0, count: 0, games: new Set(), last: null };
-      e.total += r.amount; e.count++;
-      if (r.universeId) e.games.add(String(r.universeId));
-      const t = r.created ? new Date(r.created).getTime() : null;
-      if (t && (e.last === null || t > e.last)) e.last = t;
-      map.set(key, e);
-    }
-    let sellers = [...map.values()];
-    if (ui.q) sellers = sellers.filter(s => s.name.toLowerCase().includes(ui.q) || String(s.id) === ui.q);
-    sellers.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
-      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
 
-    if (!sellers.length) { body.innerHTML = `<div class="rst-empty">Nothing matches.</div>`; return; }
-
-    body.innerHTML = `<div class="rst-note" style="margin-bottom:10px">Who actually received your Robux.</div>
-      <table class="rst-table">
-      <thead><tr><th>#</th><th>Seller</th><th class="r">Games</th><th class="r">Purchases</th><th class="r">Robux</th>${cfg.showUsd ? '<th class="r">≈ USD</th>' : ''}<th class="r">Last</th></tr></thead>
-      <tbody>${sellers.slice(0, 400).map((s, i) => `
-        <tr><td style="color:var(--tx2)">${i + 1}</td>
-          <td><b>${escapeHtml(s.name)}</b>${s.id ? ` <small style="color:var(--tx2)">#${s.id}</small>` : ''}</td>
-          <td class="r">${fmt(s.games.size)}</td><td class="r">${fmt(s.count)}</td>
-          <td class="r g">${fmt(s.total)}</td>${cfg.showUsd ? `<td class="r">${usd(s.total)}</td>` : ''}
-          <td class="r" style="color:var(--tx2)">${dstr(s.last)}</td></tr>`).join('')}
-      </tbody></table>`;
-  }
-
-  function injectStyles() {
-    addStyle(`
-    #rst-overlay, #rst-shell, #rst-shell *{box-sizing:border-box;}
-
-    /* ---------------- launchers ---------------- */
-    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
-    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
-    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
-      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
-      animation:rst-pulse 1.2s ease-in-out infinite;}
-    #rst-pagebtn{position:relative;display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
-      background:#00a2ff;color:#fff;border:none;border-radius:8px;padding:0 14px;height:36px;
-      font:600 14px/1 var(--rf);cursor:pointer;}
-    #rst-pagebtn:hover{filter:brightness(1.08);}
-    #rst-pagebtn svg{width:18px;height:18px;}
-    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
-      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:44px;width:44px;
-      cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35);transition:width .18s,padding .18s;overflow:hidden;padding:0;}
-    #rst-fab svg{width:22px;height:22px;flex:none;}
-    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:600 14px var(--rf);transition:max-width .18s,opacity .15s;}
-    #rst-fab:hover{width:180px;padding:0 16px;gap:9px;}
-    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
-    #rst-fab.hide{display:none;}
-    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
-    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-
-    /* ---------------- shell ---------------- */
-    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(4,6,10,.72);
-      backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center;padding:18px;}
-    #rst-overlay.open{display:flex;}
-
-    #rst-shell{
-      --rf:"Builder Sans","BuilderSans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
-      --acc:#00a2ff; --acc2:#a077ff;
-      --bg:#0b0d11; --panel:#121519; --card:#171b21; --card2:#1e232a; --line:rgba(255,255,255,.07);
-      --line2:rgba(255,255,255,.12); --tx:#f4f6f8; --tx2:#8d97a4; --money:#3ddc97; --warn:#ffc24b; --bad:#ff6b7a;
-      --pad:18px; --gap:14px; --r:14px;
-      width:min(1320px,100%);height:min(880px,100%);display:flex;overflow:hidden;position:relative;
-      background:var(--bg);color:var(--tx);border:1px solid var(--line2);border-radius:20px;
-      font:14px/1.5 var(--rf);box-shadow:0 40px 100px rgba(0,0,0,.7);animation:rst-in .2s cubic-bezier(.2,.9,.3,1);}
-    #rst-shell[data-theme="light"]{--bg:#f2f4f7;--panel:#fff;--card:#fff;--card2:#eef1f5;
-      --line:rgba(0,0,0,.08);--line2:rgba(0,0,0,.14);--tx:#0d1117;--tx2:#5b6675;--money:#0f9d64;}
-    #rst-shell[data-density="compact"]{--pad:12px;--gap:10px;--r:11px;font-size:13px;}
-    @keyframes rst-in{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
-
-    /* ---------------- sidebar ---------------- */
-    .rst-side{width:236px;flex:none;background:var(--panel);border-right:1px solid var(--line);
-      display:flex;flex-direction:column;padding:16px 12px;gap:4px;}
-    .rst-side .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 14px;}
-    .rst-side .mark{width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;
-      background:linear-gradient(140deg,var(--acc),var(--acc2));box-shadow:0 4px 14px rgba(0,0,0,.3);}
-    .rst-side .mark svg{width:19px;height:19px;}
-    .rst-side .bn{font-size:15px;font-weight:800;letter-spacing:-.2px;line-height:1.1;}
-    .rst-side .bs{font-size:11px;color:var(--tx2);}
-    .rst-grp{font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--tx2);
-      padding:14px 10px 5px;opacity:.75;}
-    .rst-nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;
-      color:var(--tx2);font-weight:600;font-size:13.5px;border:none;background:none;width:100%;text-align:left;
-      transition:background .12s,color .12s;}
-    .rst-nav svg{width:17px;height:17px;flex:none;}
-    .rst-nav:hover{background:var(--card2);color:var(--tx);}
-    .rst-nav.on{background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 22%,transparent),transparent);
-      color:var(--tx);box-shadow:inset 2px 0 0 var(--acc);}
-    .rst-nav .badge{margin-left:auto;font-size:11px;font-weight:700;color:var(--tx2);}
-    .rst-side .foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--line);}
-    .rst-chip{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:var(--card);
-      font-size:12px;color:var(--tx2);}
-    .rst-chip .dot{width:7px;height:7px;border-radius:50%;background:var(--money);flex:none;}
-    .rst-chip.busy .dot{background:var(--acc);animation:rst-pulse 1.1s infinite;}
-
-    /* ---------------- main ---------------- */
-    .rst-main{flex:1;display:flex;flex-direction:column;min-width:0;}
-    .rst-bar{display:flex;align-items:center;gap:10px;padding:14px var(--pad);border-bottom:1px solid var(--line);
-      flex:none;background:var(--panel);}
-    .rst-bar h1{margin:0;font-size:19px;font-weight:800;letter-spacing:-.4px;}
-    .rst-bar .sub{font-size:12px;color:var(--tx2);}
-    .rst-bar .sp{flex:1;}
-    .rst-btn{height:36px;padding:0 15px;border-radius:10px;border:1px solid var(--line2);background:transparent;
-      color:var(--tx);font:600 13px var(--rf);cursor:pointer;white-space:nowrap;transition:background .12s;}
-    .rst-btn:hover:not(:disabled){background:var(--card2);}
-    .rst-btn.pri{background:linear-gradient(135deg,var(--acc),color-mix(in srgb,var(--acc) 55%,var(--acc2)));
-      border-color:transparent;color:#fff;}
-    .rst-btn.pri:hover:not(:disabled){filter:brightness(1.09);}
-    .rst-btn:disabled{opacity:.4;cursor:not-allowed;}
-    .rst-ico{width:36px;height:36px;border-radius:10px;border:1px solid var(--line2);background:transparent;
-      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;}
-    .rst-ico:hover{background:var(--card2);color:var(--tx);}
-    .rst-ico svg{width:17px;height:17px;}
-
-    .rst-scan{display:none;align-items:center;gap:12px;padding:9px var(--pad);background:var(--card);
-      border-bottom:1px solid var(--line);position:relative;flex:none;font-size:13px;}
-    .rst-scan.on{display:flex;}
-    .rst-spin{width:15px;height:15px;border-radius:50%;border:2px solid color-mix(in srgb,var(--acc) 30%,transparent);
-      border-top-color:var(--acc);animation:rst-spin .7s linear infinite;flex:none;}
-    @keyframes rst-spin{to{transform:rotate(360deg)}}
-    .rst-scan .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-scan .clock{font:700 12px ui-monospace,Consolas,monospace;color:var(--tx2);}
-    .rst-scan .mini{height:28px;padding:0 11px;border-radius:8px;border:1px solid var(--line2);background:none;
-      color:var(--tx2);font:600 12px var(--rf);cursor:pointer;}
-    .rst-scan .bar{position:absolute;left:0;bottom:0;height:2px;width:100%;overflow:hidden;}
-    .rst-scan .bar i{display:block;height:100%;width:28%;background:var(--acc);animation:rst-slide 1.1s infinite ease-in-out;}
-    @keyframes rst-slide{0%{margin-left:-28%}100%{margin-left:100%}}
-
-    .rst-toast{display:none;align-items:center;gap:10px;padding:10px var(--pad);font-size:13px;flex:none;
-      border-bottom:1px solid var(--line);}
-    .rst-toast.on{display:flex;}
-    .rst-toast.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--warn);}
-    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
-
-    .rst-body{flex:1;overflow:auto;padding:var(--pad);}
-    .rst-body::-webkit-scrollbar{width:11px}
-    .rst-body::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px;border:3px solid var(--bg)}
-
-    .rst-tools{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
-    .rst-main > .rst-tools{padding:14px var(--pad) 0;margin:0;flex:none;}
-    .rst-field{flex:1;min-width:220px;position:relative;display:flex;align-items:center;}
-    .rst-field svg{position:absolute;left:12px;width:16px;height:16px;color:var(--tx2);pointer-events:none;}
-    .rst-search{width:100%;height:38px;background:var(--card);border:1px solid var(--line);border-radius:10px;
-      color:var(--tx);padding:0 12px 0 36px;font:14px var(--rf);}
-    .rst-search:focus{outline:none;border-color:var(--acc);}
-    .rst-select{height:38px;background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--tx);
-      padding:0 10px;font:600 13px var(--rf);cursor:pointer;}
-
-    /* ---------------- bento overview ---------------- */
-    .rst-bento{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap);}
-    .rst-t{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;
-      position:relative;overflow:hidden;min-width:0;}
-    .rst-t.w2{grid-column:span 2;} .rst-t.w4{grid-column:span 4;}
-    .rst-t .k{font-size:10.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--tx2);}
-    .rst-t .v{font-size:30px;font-weight:800;letter-spacing:-1px;margin-top:6px;display:flex;align-items:center;gap:8px;line-height:1.1;}
-    .rst-t .v.sm{font-size:21px;letter-spacing:-.4px;}
-    .rst-t .s{font-size:12.5px;color:var(--tx2);margin-top:5px;line-height:1.5;}
-    .rst-t.hero{grid-column:span 2;grid-row:span 2;
-      background:linear-gradient(150deg,color-mix(in srgb,var(--acc) 20%,var(--card)),
-      color-mix(in srgb,var(--acc2) 14%,var(--card)));}
-    .rst-t.hero .v{font-size:46px;letter-spacing:-2px;}
-    .rst-t .spark{position:absolute;left:0;right:0;bottom:0;height:58px;opacity:.5;pointer-events:none;}
-    .rst-t .spark svg{width:100%;height:100%;display:block;}
-    .rst-delta{display:inline-flex;align-items:center;gap:4px;font-weight:700;font-size:12.5px;
-      padding:3px 8px;border-radius:999px;}
-    .rst-delta.up{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);}
-    .rst-delta.down{background:color-mix(in srgb,var(--money) 16%,transparent);color:var(--money);}
-    .rst-delta.flat{background:var(--card2);color:var(--tx2);}
-    .rst-mini-list{display:flex;flex-direction:column;gap:9px;margin-top:12px;}
-    .rst-mini-row{display:flex;align-items:center;gap:10px;font-size:13px;min-width:0;}
-    .rst-mini-row img{width:28px;height:28px;border-radius:8px;background:var(--card2);flex:none;object-fit:cover;}
-    .rst-mini-row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-mini-row .a{font-weight:700;color:var(--money);white-space:nowrap;}
-    .rst-donut{display:flex;align-items:center;gap:16px;margin-top:10px;}
-    .rst-donut svg{width:104px;height:104px;flex:none;}
-    .rst-legend{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--tx2);min-width:0;}
-    .rst-legend span{display:flex;align-items:center;gap:7px;white-space:nowrap;}
-    .rst-legend i{width:9px;height:9px;border-radius:3px;flex:none;}
-    .rst-legend b{color:var(--tx);}
-    @media (max-width:1100px){.rst-bento{grid-template-columns:repeat(2,1fr);} .rst-t.w4{grid-column:span 2;}}
-
-    /* ---------------- shared components ---------------- */
-    .rst-mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--gap);}
-    .rst-ms{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px;min-width:0;}
-    .rst-ms .k{font-size:10.5px;color:var(--tx2);font-weight:800;text-transform:uppercase;letter-spacing:.6px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-ms .v{font-size:21px;font-weight:800;margin-top:4px;display:flex;align-items:baseline;gap:4px;
-      white-space:nowrap;letter-spacing:-.5px;}
-    .rst-ms .v small{font-size:12px;color:var(--tx2);font-weight:600;}
-    .rst-ms .s{font-size:11.5px;color:var(--tx2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-
-    .rst-rbx{display:inline-block;width:1em;height:1em;vertical-align:-.1em;flex:none;}
-    .rst-rbx svg{width:100%;height:100%;display:block;}
-    .rst-rbxs{display:inline-block;vertical-align:-.15em;margin-right:2px;flex:none;}
-
-    .rst-summary{font-size:13px;color:var(--tx2);margin:0 0 12px;}
-    .rst-game{display:flex;align-items:center;gap:14px;padding:12px 14px;border-radius:var(--r);margin-bottom:9px;
-      cursor:pointer;background:var(--card);border:1px solid var(--line);transition:transform .12s,border-color .12s;}
-    .rst-game:hover{border-color:var(--acc);transform:translateX(3px);}
-    .rst-game .rank{width:22px;text-align:center;font-weight:800;color:var(--tx2);font-size:13px;flex:none;}
-    .rst-game img{width:54px;height:54px;border-radius:12px;background:var(--card2);flex:none;object-fit:cover;}
-    .rst-game .nm{flex:1;min-width:0;}
-    .rst-game .nm b{display:block;font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-game .meta{font-size:12px;color:var(--tx2);margin-top:2px;}
-    .rst-game .amt{text-align:right;flex:none;}
-    .rst-game .amt b{font-size:18px;font-weight:800;color:var(--money);display:flex;align-items:center;gap:5px;justify-content:flex-end;letter-spacing:-.4px;}
-    .rst-game .amt small{display:block;font-size:11px;color:var(--tx2);margin-top:2px;}
-    .rst-meter{height:4px;border-radius:3px;background:var(--card2);margin-top:8px;overflow:hidden;}
-    .rst-meter i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--acc),var(--acc2));}
-
-    .rst-chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
-    .rst-chip2, .rst-chip{font-size:11px;font-weight:700;padding:3px 9px;border-radius:7px;background:var(--card2);
-      color:var(--tx2);border:1px solid var(--line);}
-    .rst-chip.pass{color:#66c6ff;} .rst-chip.prod{color:#b79bff;} .rst-chip.serv{color:#ffab6b;}
-    .rst-chip.inf{color:var(--warn);}
-
-    .rst-back{display:inline-flex;align-items:center;gap:6px;background:none;border:none;color:var(--tx2);
-      font:700 13px var(--rf);cursor:pointer;padding:6px 0;margin-bottom:10px;}
-    .rst-back:hover{color:var(--tx);}
-    .rst-dhead{display:flex;gap:18px;align-items:center;padding:18px;background:var(--card);
-      border:1px solid var(--line);border-radius:var(--r);margin-bottom:16px;flex-wrap:wrap;}
-    .rst-dhead img{width:92px;height:92px;border-radius:16px;background:var(--card2);flex:none;object-fit:cover;}
-    .rst-dhead h2{margin:0 0 4px;font-size:23px;font-weight:800;letter-spacing:-.5px;}
-    .rst-dhead .meta{font-size:12.5px;color:var(--tx2);line-height:1.7;}
-    .rst-dhead .big{margin-left:auto;text-align:right;}
-    .rst-dhead .big b{display:flex;align-items:center;gap:8px;font-size:32px;font-weight:800;color:var(--money);letter-spacing:-1.2px;}
-    .rst-dhead .big small{font-size:12px;color:var(--tx2);font-weight:600;}
-
-    .rst-catbar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin-bottom:9px;background:var(--card2);}
-    .rst-catkey{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--tx2);margin-bottom:16px;}
-    .rst-catkey span{display:flex;align-items:center;gap:6px;}
-    .rst-catkey i{width:9px;height:9px;border-radius:3px;display:inline-block;}
-
-    .rst-secttl{font-size:11.5px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;color:var(--tx2);
-      margin:22px 0 10px;display:flex;align-items:center;gap:9px;}
-    .rst-secttl b{color:var(--tx);}
-    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--line);}
-
-    .rst-item{display:flex;align-items:center;gap:13px;padding:11px 14px;border-radius:11px;margin-bottom:7px;
-      background:var(--card);cursor:pointer;border:1px solid var(--line);}
-    .rst-item:hover{border-color:var(--acc);}
-    .rst-item .x{font-weight:800;font-size:13px;color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent);
-      border-radius:8px;padding:4px 10px;flex:none;min-width:46px;text-align:center;}
-    .rst-item .nm{flex:1;min-width:0;}
-    .rst-item .nm b{display:block;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-item .nm small{color:var(--tx2);font-size:12px;}
-    .rst-item .tot{font-weight:800;color:var(--money);white-space:nowrap;text-align:right;display:flex;align-items:center;gap:5px;}
-    .rst-item .tot small{color:var(--tx2);font-weight:600;font-size:11px;}
-    .rst-txs{margin:-3px 0 12px 28px;border-left:2px solid var(--line2);padding-left:14px;}
-    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;color:var(--tx2);}
-    .rst-tx b{color:var(--tx);font-weight:700;}
-
-    .rst-chart{display:flex;align-items:flex-end;gap:4px;height:210px;padding:16px;background:var(--card);
-      border:1px solid var(--line);border-radius:var(--r);overflow-x:auto;}
-    .rst-chart .bar{flex:1;min-width:10px;border-radius:5px 5px 0 0;
-      background:linear-gradient(180deg,var(--acc),color-mix(in srgb,var(--acc) 40%,transparent));}
-    .rst-chart .bar:hover{filter:brightness(1.3);}
-    .rst-chart .bar.zero{background:var(--card2);}
-    .rst-axis{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tx2);padding:9px 4px 0;}
-
-    .rst-table{width:100%;border-collapse:collapse;font-size:13.5px;}
-    .rst-table th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx2);
-      padding:9px 11px;border-bottom:1px solid var(--line2);position:sticky;top:calc(var(--pad) * -1);background:var(--bg);font-weight:800;}
-    .rst-table td{padding:10px 11px;border-bottom:1px solid var(--line);}
-    .rst-table tr:hover td{background:var(--card);}
-    .rst-table .r{text-align:right;white-space:nowrap;}
-    .rst-table .g{color:var(--money);font-weight:800;}
-    .rst-table .up{color:var(--bad);font-weight:800;}
-    .rst-table .down{color:var(--money);font-weight:800;}
-    .rst-table .flat{color:var(--tx2);}
-
-    .rst-empty{text-align:center;color:var(--tx2);padding:52px 20px;}
-    .rst-empty .ico{width:62px;height:62px;margin:0 auto 16px;border-radius:18px;display:grid;place-items:center;color:#fff;
-      background:linear-gradient(140deg,var(--acc),var(--acc2));}
-    .rst-empty .ico svg{width:32px;height:32px;}
-    .rst-empty h3{margin:0 0 8px;font-size:21px;font-weight:800;color:var(--tx);letter-spacing:-.4px;}
-    .rst-empty p{margin:0 auto 20px;max-width:460px;font-size:13.5px;line-height:1.7;}
-    .rst-steps{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:22px;}
-    .rst-step{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;width:200px;text-align:left;}
-    .rst-step .n{width:24px;height:24px;border-radius:50%;color:#fff;font:800 12px var(--rf);
-      background:linear-gradient(140deg,var(--acc),var(--acc2));display:grid;place-items:center;margin-bottom:9px;}
-    .rst-step b{display:block;font-size:13.5px;color:var(--tx);margin-bottom:3px;}
-    .rst-step span{font-size:12px;line-height:1.6;}
-
-    .rst-note{font-size:12px;color:var(--tx2);margin-top:14px;line-height:1.7;}
-    a.rst-link{color:var(--acc);text-decoration:none;}
-    a.rst-link:hover{text-decoration:underline;}
-
-    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--gap);}
-    .rst-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;}
-    .rst-card .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx2);font-weight:800;}
-    .rst-card .b{font-size:17px;font-weight:700;margin:6px 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-card .s{font-size:12.5px;color:var(--tx2);}
-
-    .rst-timeline{position:relative;}
-    .rst-mile{display:flex;gap:13px;align-items:flex-start;padding:10px 0 10px 16px;position:relative;
-      border-left:2px solid var(--line2);}
-    .rst-mile .dot{position:absolute;left:-6px;top:15px;width:10px;height:10px;border-radius:50%;
-      background:var(--acc);box-shadow:0 0 0 3px var(--bg);}
-    .rst-mile .dot.count{background:var(--acc2);}
-    .rst-mile b{font-size:14px;font-weight:700;}
-    .rst-mile .s{font-size:12px;color:var(--tx2);margin-top:2px;}
-
-    .rst-cum{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px;height:200px;}
-    .rst-cum svg{width:100%;height:100%;display:block;}
-
-    .rst-recon{border-radius:var(--r);padding:14px 16px;margin-bottom:16px;border:1px solid var(--line2);}
-    .rst-recon.ok{background:color-mix(in srgb,var(--money) 10%,transparent);border-color:color-mix(in srgb,var(--money) 38%,transparent);}
-    .rst-recon.off{background:color-mix(in srgb,var(--warn) 10%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent);}
-    .rst-recon .t{font-weight:800;font-size:14.5px;margin-bottom:4px;}
-    .rst-recon .s{font-size:12.5px;color:var(--tx2);line-height:1.7;}
-    .rst-recon b{color:var(--tx);}
-
-    .rst-money-top{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:8px;}
-    .rst-money-top .rst-t{flex:1;min-width:250px;}
-    .rst-wrap-hero{background:linear-gradient(150deg,color-mix(in srgb,var(--acc) 22%,var(--card)),
-      color-mix(in srgb,var(--acc2) 16%,var(--card)));border:1px solid var(--line);border-radius:var(--r);
-      padding:24px;margin-bottom:18px;}
-    .rst-wrap-hero .k{font-size:11px;color:var(--tx2);font-weight:800;text-transform:uppercase;letter-spacing:.6px;}
-    .rst-wrap-hero .v{display:flex;align-items:center;gap:10px;font-size:44px;font-weight:800;
-      letter-spacing:-2px;line-height:1.1;margin:6px 0 8px;}
-    .rst-wrap-hero .usd{font-size:13px;color:var(--tx2);}
-    .rst-wrap-hero .usd b{color:var(--tx);}
-    .rst-yearpick,.rst-cats,.rst-types{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px;}
-    .rst-type{font:700 12.5px var(--rf);padding:7px 14px;border-radius:9px;border:1px solid var(--line2);
-      background:var(--card);color:var(--tx2);cursor:pointer;user-select:none;transition:all .12s;}
-    .rst-type:hover{color:var(--tx);}
-    .rst-type.on{background:color-mix(in srgb,var(--acc) 18%,transparent);border-color:var(--acc);color:var(--tx);}
-    .rst-type.in.on{background:color-mix(in srgb,var(--money) 16%,transparent);border-color:var(--money);}
-
-    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--gap);}
-    .rst-habit .t{font-size:12.5px;color:var(--tx2);margin-bottom:9px;}
-    .rst-habit b{color:var(--tx);}
-    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;
-      border-bottom:1px solid var(--line);font-size:13.5px;}
-    .rst-exrow small{color:var(--tx2);}
-
-    /* ---------------- settings ---------------- */
-    .rst-set{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-bottom:var(--gap);}
-    .rst-set h4{margin:0 0 4px;font-size:14.5px;font-weight:800;}
-    .rst-set p{margin:0 0 13px;font-size:12.5px;color:var(--tx2);line-height:1.7;}
-    .rst-set .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-    .rst-flabel{font-size:13px;color:var(--tx2);}
-    .rst-num{width:92px;height:36px;background:var(--card2);border:1px solid var(--line2);color:var(--tx);
-      border-radius:9px;padding:0 11px;font:700 13px var(--rf);}
-    .rst-switch{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--tx);cursor:pointer;
-      user-select:none;padding:8px 0;}
-    .rst-switch input{appearance:none;width:40px;height:23px;border-radius:999px;background:var(--card2);
-      border:1px solid var(--line2);position:relative;cursor:pointer;transition:background .15s;flex:none;margin:0;}
-    .rst-switch input:checked{background:var(--acc);border-color:var(--acc);}
-    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;
-      background:#fff;transition:transform .15s;}
-    .rst-switch input:checked:after{transform:translateX(17px);}
-    .rst-switch .sub{font-size:12px;color:var(--tx2);display:block;}
-    .rst-swatches{display:flex;gap:9px;flex-wrap:wrap;}
-    .rst-sw{width:34px;height:34px;border-radius:10px;cursor:pointer;border:2px solid transparent;}
-    .rst-sw.on{border-color:var(--tx);box-shadow:0 0 0 3px var(--bg) inset;}
-    .rst-log{margin:0;padding:13px;background:rgba(0,0,0,.4);color:var(--tx2);border-radius:11px;max-height:230px;
-      overflow:auto;font:11px/1.65 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
-
-    /* ---------------- command palette ---------------- */
-    #rst-cmd{position:absolute;inset:0;z-index:60;background:rgba(0,0,0,.5);display:none;
-      align-items:flex-start;justify-content:center;padding-top:14vh;}
-    #rst-cmd.on{display:flex;}
-    #rst-cmd .box{width:min(620px,92%);background:var(--panel);border:1px solid var(--line2);border-radius:16px;
-      overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,.6);}
-    #rst-cmd input{width:100%;height:54px;background:none;border:none;border-bottom:1px solid var(--line);
-      color:var(--tx);padding:0 18px;font:16px var(--rf);}
-    #rst-cmd input:focus{outline:none;}
-    #rst-cmd .list{max-height:340px;overflow:auto;padding:8px;}
-    #rst-cmd .row{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;}
-    #rst-cmd .row.sel{background:var(--card2);}
-    #rst-cmd .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    #rst-cmd .row .h{font-size:11.5px;color:var(--tx2);}
-    #rst-cmd .row svg{width:16px;height:16px;color:var(--tx2);flex:none;}
-    #rst-cmd .none{padding:22px;text-align:center;color:var(--tx2);font-size:13px;}
-
-    /* ---------------- troubleshoot ---------------- */
-    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.75);display:none;
-      align-items:center;justify-content:center;padding:20px;}
-    #rst-diag.open{display:flex;}
-    #rst-diag .box{width:min(900px,100%);height:min(640px,100%);background:#0b0d11;border:1px solid rgba(255,255,255,.12);
-      border-radius:18px;display:flex;flex-direction:column;overflow:hidden;color:#f4f6f8;
-      --rf:"Builder Sans",system-ui,sans-serif;--tx:#f4f6f8;--tx2:#8d97a4;--line:rgba(255,255,255,.07);
-      --line2:rgba(255,255,255,.12);--card2:#1e232a;--acc:#00a2ff;--panel:#121519;font:14px var(--rf);}
-    #rst-diag textarea{flex:1;background:#05070a;color:#c8ced6;border:none;padding:16px;resize:none;
-      font:11.5px/1.7 ui-monospace,Consolas,monospace;}
-    #rst-diag textarea:focus{outline:none;}
-    `);
-  }
 
   /* ------------------------------------------------------------------ *
    * Pages
@@ -2465,15 +1991,13 @@
     overlay.innerHTML = `
       <div id="rst-shell" data-theme="${effectiveTheme()}" data-density="${cfg.density || 'cozy'}">
 
-        <aside class="rst-side">
-          <div class="brand">
-            <span class="mark">${ICONS.logo}</span>
-            <div><div class="bn">Robux Tracker</div><div class="bs" id="rst-sub">—</div></div>
-          </div>
+        <aside class="rst-rail">
+          <span class="mark">${ICONS.logo}</span>
           <div id="rst-nav"></div>
-          <div class="foot">
-            <div class="rst-chip" id="rst-chip"><span class="dot"></span><span id="rst-chiptext">Idle</span></div>
-          </div>
+          <span class="spacer"></span>
+          <span class="rst-pulse" id="rst-chip" title="scan status"></span>
+          <span id="rst-chiptext" style="display:none"></span>
+          <span id="rst-sub" style="display:none"></span>
         </aside>
 
         <main class="rst-main">
@@ -2569,16 +2093,6 @@
     $('#rst-range').value = ui.range;
   }
 
-  function renderNav() {
-    const nav = $('#rst-nav');
-    if (!nav) return;
-    nav.innerHTML = PAGES.map(p => p.grp
-      ? `<div class="rst-grp">${escapeHtml(p.grp)}</div>`
-      : `<button class="rst-nav ${ui.tab === p.id ? 'on' : ''}" data-tab="${p.id}">
-           ${ICONS[p.icon] || ICONS.pie}<span>${escapeHtml(p.label)}</span>
-           ${p.id === 'games' && state.records.length ? `<span class="badge">${fmt(buildGames(activeSpend()).length)}</span>` : ''}
-         </button>`).join('');
-  }
 
   function applyAccent() {
     const a = ACCENTS[cfg.accent] || ACCENTS[0];
@@ -2628,6 +2142,10 @@
     setStatus(document.getElementById('rst-status') ? document.getElementById('rst-status').textContent : '');
   }
 
+  const tile = (lb, big, sm) =>
+    `<div class="rst-tile"><div class="lb">${lb}</div><div class="big" style="font-size:24px">${big}</div>${
+      sm ? `<div class="sm">${sm}</div>` : ''}</div>`;
+
   const msCard = (k, v, sub) =>
     `<div class="rst-ms"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
   const monthYear = t => new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
@@ -2645,120 +2163,8 @@
   /* ------------------------------------------------------------------ *
    * Dashboard
    * ------------------------------------------------------------------ */
-  function sparkline(months) {
-    if (months.length < 2) return '';
-    const max = Math.max(...months.map(m => m.total)) || 1;
-    const pts = months.map((m, i) => `${(i / (months.length - 1)) * 100},${40 - (m.total / max) * 38}`).join(' ');
-    return `<div class="spark"><svg viewBox="0 0 100 40" preserveAspectRatio="none">
-      <polygon points="0,40 ${pts} 100,40" fill="currentColor" opacity=".22"></polygon>
-      <polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1"
-        vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline></svg></div>`;
-  }
 
-  function donut(cats, total) {
-    const R = 40, C = 2 * Math.PI * R;
-    let off = 0;
-    const rings = cats.slice(0, 6).map(([c, v]) => {
-      const len = (v / total) * C;
-      const seg = `<circle cx="52" cy="52" r="${R}" fill="none" stroke="${catColor(c)}" stroke-width="16"
-        stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}"
-        transform="rotate(-90 52 52)"></circle>`;
-      off += len;
-      return seg;
-    }).join('');
-    return `<svg viewBox="0 0 104 104">${rings}</svg>`;
-  }
 
-  function renderOverview(body) {
-    const spend = activeSpend();
-    const games = sortGames(buildGames(spend));
-    const total = games.reduce((s, g) => s + g.total, 0);
-    const months = monthly(spend);
-    const mon = tracksCurrency() ? moneyStats() : null;
-    const cmp = comparisons()[0];
-    const st = streaks();
-    const rc = reconcile();
-
-    const catTotals = new Map();
-    for (const r of spend) if (r.amount) catTotals.set(categoryOf(r.itemType), (catTotals.get(categoryOf(r.itemType)) || 0) + r.amount);
-    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
-
-    const recent = spend.slice().sort((a, b) => new Date(b.created) - new Date(a.created)).slice(0, 6);
-    const delta = cmp ? cmp.delta : 0;
-    const dcls = delta > 0.5 ? 'up' : delta < -0.5 ? 'down' : 'flat';
-
-    body.innerHTML = `
-      <div class="rst-bento">
-        <div class="rst-t hero" style="color:var(--acc)">
-          <div class="k">Total spent · ${rangeLabel()}</div>
-          <div class="v" style="color:var(--tx)">${robuxGlyph(28)}${fmt(total)}</div>
-          <div class="s">${fmt(spend.length)} purchases across ${fmt(games.length)} games${
-            mon && mon.paid ? `<br>worth about <b style="color:var(--tx)">${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b> at what you really paid` : ''}</div>
-          ${sparkline(months)}
-        </div>
-
-        <div class="rst-t">
-          <div class="k">Really paid for Robux</div>
-          <div class="v sm">${mon && mon.paid ? moneyStr(mon.paid) : '—'}</div>
-          <div class="s">${mon && mon.paid
-            ? `${fmt(mon.matchedRobux)} R$ bought · ${moneyStr(mon.matchedRobux ? (mon.paid / mon.matchedRobux) * 1000 : 0)} per 1,000`
-            : 'Turn on Robux purchases to reconcile this'}</div>
-        </div>
-
-        <div class="rst-t">
-          <div class="k">This month</div>
-          <div class="v sm">${robuxGlyph(16)}${fmt(cmp ? cmp.now.total : 0)}</div>
-          <div class="s"><span class="rst-delta ${dcls}">${delta > 0.5 ? '▲' : delta < -0.5 ? '▼' : '='} ${Math.abs(delta).toFixed(0)}%</span>
-            vs ${fmt(cmp ? cmp.prev.total : 0)} last month</div>
-        </div>
-
-        <div class="rst-t w2">
-          <div class="k">Top games</div>
-          <div class="rst-mini-list">
-            ${games.slice(0, 4).map(g => `
-              <div class="rst-mini-row" data-game="${escapeHtml(g.key)}" style="cursor:pointer">
-                <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
-                <span class="n">${escapeHtml(g.label)}</span>
-                <span class="a">${fmt(g.total)}</span>
-              </div>`).join('') || '<div class="s">Nothing yet</div>'}
-          </div>
-        </div>
-
-        <div class="rst-t w2">
-          <div class="k">What you bought</div>
-          <div class="rst-donut">
-            ${cats.length ? donut(cats, total) : ''}
-            <div class="rst-legend">${cats.slice(0, 5).map(([c, v]) =>
-              `<span><i style="background:${catColor(c)}"></i>${escapeHtml(c)} <b>${((v / total) * 100).toFixed(0)}%</b></span>`).join('')}</div>
-          </div>
-        </div>
-
-        <div class="rst-t">
-          <div class="k">Balance check</div>
-          <div class="v sm">${rc.actual == null ? '—' : fmt(rc.actual)}</div>
-          <div class="s">${rc.actual == null ? 'Open roblox.com to read your balance'
-            : Math.abs(rc.gap) > 50 ? `off by ${fmt(Math.abs(rc.gap))} R$ — see Real money`
-            : 'in and out account for everything'}</div>
-        </div>
-
-        <div class="rst-t">
-          <div class="k">Streak</div>
-          <div class="v sm">${st ? fmt(st.best) : 0} <small style="font-size:13px;color:var(--tx2)">days</small></div>
-          <div class="s">${st ? `${fmt(st.days)} days with a purchase` : 'No history yet'}</div>
-        </div>
-
-        <div class="rst-t w2">
-          <div class="k">Latest purchases</div>
-          <div class="rst-mini-list">
-            ${recent.map(r => `<div class="rst-mini-row">
-              <span class="n">${escapeHtml(r.itemName || r.itemType || 'Item')}
-                <span style="color:var(--tx2)"> · ${escapeHtml(r.placeName || r.sellerName || '')}</span></span>
-              <span class="a">${fmt(r.amount)}</span></div>`).join('') || '<div class="s">Nothing yet</div>'}
-          </div>
-        </div>
-      </div>`;
-    fetchIcons(games.slice(0, 4).map(g => g.universeId)).then(paintIcons);
-  }
 
   /* ------------------------------------------------------------------ *
    * All transactions
@@ -3162,6 +2568,803 @@
     $('#rst-range').addEventListener('change', e => { ui.range = e.target.value; ui.gameKey = null; render(); });
   }
 
+  function injectStyles() {
+    addStyle(`
+    #rst-overlay, #rst-shell, #rst-shell *{box-sizing:border-box;}
+
+    /* ================= launchers ================= */
+    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
+    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
+    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
+      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
+      animation:rst-pulse 1.2s ease-in-out infinite;}
+    #rst-pagebtn{position:relative;display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
+      background:#00a2ff;color:#fff;border:none;border-radius:12px;padding:0 16px;height:38px;
+      font:800 14px/1 var(--rf);cursor:pointer;letter-spacing:-.2px;}
+    #rst-pagebtn:hover{filter:brightness(1.08);}
+    #rst-pagebtn svg{width:18px;height:18px;}
+    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
+      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:46px;width:46px;
+      cursor:pointer;box-shadow:0 8px 26px rgba(0,120,255,.45);transition:width .18s,padding .18s;overflow:hidden;padding:0;}
+    #rst-fab svg{width:23px;height:23px;flex:none;}
+    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:800 14px var(--rf);transition:max-width .18s,opacity .15s;}
+    #rst-fab:hover{width:186px;padding:0 18px;gap:10px;}
+    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
+    #rst-fab.hide{display:none;}
+    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
+    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+    /* ================= shell ================= */
+    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(2,3,6,.82);
+      backdrop-filter:blur(10px);display:none;align-items:center;justify-content:center;padding:0;}
+    #rst-overlay.open{display:flex;}
+
+    #rst-shell{
+      --rf:"Builder Sans","BuilderSans",-apple-system,"Segoe UI",system-ui,sans-serif;
+      --a1:#00a2ff; --a2:#a077ff;
+      --ink:#05060a; --sheet:#0c0e14; --card:#141821; --card2:#1b202b; --edge:rgba(255,255,255,.06);
+      --edge2:rgba(255,255,255,.13); --tx:#fbfcfe; --tx2:#7e8a9c; --cash:#38e08a; --hot:#ff5c7a; --warn:#ffc24b;
+      --pad:26px; --gap:16px;
+      width:100%;height:100%;display:flex;overflow:hidden;position:relative;
+      background:var(--ink);color:var(--tx);font:15px/1.5 var(--rf);
+      -webkit-font-smoothing:antialiased;animation:rst-in .22s cubic-bezier(.2,.9,.3,1);}
+    #rst-shell[data-theme="light"]{--ink:#eceef3;--sheet:#f6f7fa;--card:#fff;--card2:#eef1f6;
+      --edge:rgba(10,14,25,.08);--edge2:rgba(10,14,25,.16);--tx:#0a0e19;--tx2:#5f6a7d;--cash:#00a25e;}
+    #rst-shell[data-density="compact"]{--pad:16px;--gap:11px;font-size:14px;}
+    @keyframes rst-in{from{opacity:0;transform:scale(.99)}to{opacity:1;transform:none}}
+
+    /* ================= icon rail ================= */
+    .rst-rail{width:76px;flex:none;background:var(--sheet);border-right:1px solid var(--edge);
+      display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:6px;z-index:5;}
+    .rst-rail .mark{width:44px;height:44px;border-radius:15px;display:grid;place-items:center;color:#fff;flex:none;
+      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 8px 22px rgba(0,0,0,.45);margin-bottom:12px;}
+    .rst-rail .mark svg{width:23px;height:23px;}
+    .rst-rdiv{width:26px;height:1px;background:var(--edge2);margin:8px 0;flex:none;}
+    .rst-nav{width:50px;height:46px;border-radius:15px;border:none;background:none;color:var(--tx2);cursor:pointer;
+      display:grid;place-items:center;position:relative;flex:none;transition:color .14s,background .14s;}
+    .rst-nav svg{width:21px;height:21px;}
+    .rst-nav:hover{background:var(--card);color:var(--tx);}
+    .rst-nav.on{color:var(--tx);background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 30%,transparent),
+      color-mix(in srgb,var(--a2) 22%,transparent));}
+    .rst-nav.on:before{content:"";position:absolute;left:-13px;top:12px;bottom:12px;width:4px;border-radius:0 4px 4px 0;
+      background:linear-gradient(180deg,var(--a1),var(--a2));}
+    .rst-nav .tip{position:absolute;left:58px;top:50%;transform:translateY(-50%) scale(.94);transform-origin:left center;
+      background:var(--card2);color:var(--tx);border:1px solid var(--edge2);padding:6px 11px;border-radius:9px;
+      font:700 12.5px var(--rf);white-space:nowrap;opacity:0;pointer-events:none;transition:all .13s;z-index:30;}
+    .rst-nav:hover .tip{opacity:1;transform:translateY(-50%) scale(1);}
+    .rst-rail .spacer{flex:1;}
+    .rst-pulse{width:9px;height:9px;border-radius:50%;background:var(--cash);flex:none;margin-bottom:4px;}
+    .rst-pulse.busy{background:var(--a1);animation:rst-pulse 1.1s infinite;}
+
+    /* ================= page ================= */
+    .rst-main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--ink);}
+    .rst-bar{display:flex;align-items:center;gap:12px;padding:22px var(--pad) 0;flex:none;}
+    .rst-bar h1{margin:0;font-size:34px;font-weight:900;letter-spacing:-1.3px;line-height:1;}
+    .rst-bar .sub{font-size:13.5px;color:var(--tx2);margin-top:7px;}
+    .rst-bar .sp{flex:1;}
+    .rst-btn{height:42px;padding:0 18px;border-radius:13px;border:1px solid var(--edge2);background:var(--card);
+      color:var(--tx);font:800 13.5px var(--rf);cursor:pointer;white-space:nowrap;letter-spacing:-.2px;transition:.14s;}
+    .rst-btn:hover:not(:disabled){background:var(--card2);transform:translateY(-1px);}
+    .rst-btn.pri{background:linear-gradient(135deg,var(--a1),var(--a2));border-color:transparent;color:#fff;
+      box-shadow:0 8px 22px color-mix(in srgb,var(--a1) 35%,transparent);}
+    .rst-btn:disabled{opacity:.4;cursor:not-allowed;}
+    .rst-ico{width:42px;height:42px;border-radius:13px;border:1px solid var(--edge2);background:var(--card);
+      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;}
+    .rst-ico:hover{background:var(--card2);color:var(--tx);}
+    .rst-ico svg{width:18px;height:18px;}
+
+    .rst-scan{display:none;align-items:center;gap:13px;margin:16px var(--pad) 0;padding:13px 17px;border-radius:15px;
+      background:linear-gradient(120deg,color-mix(in srgb,var(--a1) 16%,var(--card)),var(--card));
+      border:1px solid var(--edge2);position:relative;overflow:hidden;flex:none;font-size:13.5px;}
+    .rst-scan.on{display:flex;}
+    .rst-spin{width:17px;height:17px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--a1) 28%,transparent);
+      border-top-color:var(--a1);animation:rst-spin .7s linear infinite;flex:none;}
+    @keyframes rst-spin{to{transform:rotate(360deg)}}
+    .rst-scan .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
+    .rst-scan .clock{font:800 13px ui-monospace,Consolas,monospace;color:var(--tx2);}
+    .rst-scan .mini{height:31px;padding:0 13px;border-radius:10px;border:1px solid var(--edge2);background:var(--card2);
+      color:var(--tx);font:800 12px var(--rf);cursor:pointer;}
+    .rst-scan .bar{position:absolute;left:0;bottom:0;height:3px;width:100%;overflow:hidden;}
+    .rst-scan .bar i{display:block;height:100%;width:26%;border-radius:3px;
+      background:linear-gradient(90deg,var(--a1),var(--a2));animation:rst-slide 1.1s infinite ease-in-out;}
+    @keyframes rst-slide{0%{margin-left:-26%}100%{margin-left:100%}}
+
+    .rst-toast{display:none;align-items:center;gap:11px;margin:14px var(--pad) 0;padding:13px 17px;border-radius:14px;
+      font-size:13.5px;flex:none;border:1px solid;}
+    .rst-toast.on{display:flex;}
+    .rst-toast.warn{background:color-mix(in srgb,var(--warn) 13%,transparent);color:var(--warn);
+      border-color:color-mix(in srgb,var(--warn) 35%,transparent);}
+    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
+
+    .rst-body{flex:1;overflow:auto;padding:22px var(--pad) 40px;}
+    .rst-body::-webkit-scrollbar{width:12px}
+    .rst-body::-webkit-scrollbar-thumb{background:var(--card2);border-radius:9px;border:4px solid var(--ink)}
+
+    .rst-tools{display:flex;gap:11px;align-items:center;flex-wrap:wrap;}
+    .rst-main > .rst-tools{padding:18px var(--pad) 0;flex:none;}
+    .rst-field{flex:1;min-width:230px;position:relative;display:flex;align-items:center;}
+    .rst-field svg{position:absolute;left:15px;width:17px;height:17px;color:var(--tx2);pointer-events:none;}
+    .rst-search{width:100%;height:46px;background:var(--card);border:1px solid var(--edge);border-radius:14px;
+      color:var(--tx);padding:0 15px 0 42px;font:15px var(--rf);}
+    .rst-search:focus{outline:none;border-color:var(--a1);background:var(--card2);}
+    .rst-select{height:46px;background:var(--card);border:1px solid var(--edge);border-radius:14px;color:var(--tx);
+      padding:0 13px;font:800 13px var(--rf);cursor:pointer;}
+
+    /* ================= display numbers ================= */
+    .rst-display{font-size:clamp(46px,7vw,84px);font-weight:900;letter-spacing:-4px;line-height:.92;
+      display:flex;align-items:center;gap:16px;margin-top:14px;}
+    /* the glyph is 1em by default, which is enormous at display sizes */
+    .rst-display .rst-rbx{width:.52em;height:.52em;transform:none;margin:0;opacity:.9;}
+    .rst-display .rst-rbxs{transform:scale(1.7);margin:0 12px 0 8px;}
+
+    /* ================= hero ================= */
+    .rst-stage{border-radius:28px;padding:34px 36px;position:relative;overflow:hidden;margin-bottom:var(--gap);
+      background:radial-gradient(120% 140% at 0% 0%, color-mix(in srgb,var(--a1) 34%,var(--card)) 0%, var(--card) 58%),
+                 linear-gradient(135deg,transparent,color-mix(in srgb,var(--a2) 22%,transparent));
+      border:1px solid var(--edge2);}
+    .rst-stage .eyebrow{font-size:12px;font-weight:900;letter-spacing:2.4px;text-transform:uppercase;color:var(--tx2);}
+    .rst-stage .cap{font-size:15px;color:var(--tx2);margin-top:14px;max-width:62ch;line-height:1.6;}
+    .rst-stage .cap b{color:var(--tx);}
+    .rst-stage .spark{position:absolute;right:0;bottom:0;left:35%;height:66%;opacity:.4;pointer-events:none;}
+    .rst-stage .spark svg{width:100%;height:100%;display:block;}
+
+    /* ================= tiles ================= */
+    .rst-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:var(--gap);margin-bottom:var(--gap);}
+    .rst-tile{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:20px 22px;min-width:0;
+      position:relative;overflow:hidden;transition:transform .14s,border-color .14s;}
+    .rst-tile:hover{transform:translateY(-2px);border-color:var(--edge2);}
+    .rst-tile .lb{font-size:11px;font-weight:900;letter-spacing:1.4px;text-transform:uppercase;color:var(--tx2);}
+    .rst-tile .big{font-size:30px;font-weight:900;letter-spacing:-1.4px;margin-top:10px;display:flex;align-items:center;gap:7px;line-height:1.05;}
+    .rst-tile .big.money{color:var(--cash);}
+    .rst-tile .sm{font-size:12.5px;color:var(--tx2);margin-top:7px;line-height:1.5;}
+    .rst-tile.accent{background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 26%,var(--card)),var(--card));}
+    .rst-tile.wide{grid-column:span 2;}
+    @media (max-width:900px){.rst-tile.wide{grid-column:span 1;}}
+
+    .rst-delta{display:inline-flex;align-items:center;gap:5px;font-weight:900;font-size:12px;
+      padding:4px 10px;border-radius:999px;letter-spacing:-.2px;}
+    .rst-delta.up{background:color-mix(in srgb,var(--hot) 18%,transparent);color:var(--hot);}
+    .rst-delta.down{background:color-mix(in srgb,var(--cash) 18%,transparent);color:var(--cash);}
+    .rst-delta.flat{background:var(--card2);color:var(--tx2);}
+
+    /* ================= game cover grid ================= */
+    .rst-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(208px,1fr));gap:var(--gap);}
+    .rst-gcard{position:relative;border-radius:22px;overflow:hidden;cursor:pointer;background:var(--card);
+      border:1px solid var(--edge);transition:transform .16s,box-shadow .16s,border-color .16s;}
+    .rst-gcard:hover{transform:translateY(-4px);border-color:var(--a1);
+      box-shadow:0 18px 40px rgba(0,0,0,.5);}
+    .rst-gcard .cover{position:relative;aspect-ratio:1/1;overflow:hidden;background:var(--card2);}
+    .rst-gcard .cover img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .5s;}
+    .rst-gcard:hover .cover img{transform:scale(1.07);}
+    .rst-gcard .cover:after{content:"";position:absolute;inset:0;
+      background:linear-gradient(180deg,transparent 38%,rgba(4,5,9,.92) 100%);}
+    .rst-gcard .rank{position:absolute;top:12px;left:12px;z-index:2;width:30px;height:30px;border-radius:11px;
+      display:grid;place-items:center;font:900 13px var(--rf);color:#fff;backdrop-filter:blur(8px);
+      background:rgba(6,8,14,.66);border:1px solid rgba(255,255,255,.18);}
+    .rst-gcard .rank.top{background:linear-gradient(145deg,var(--a1),var(--a2));border-color:transparent;}
+    .rst-gcard .amt{position:absolute;left:14px;right:14px;bottom:12px;z-index:2;display:flex;align-items:flex-end;
+      justify-content:space-between;gap:8px;}
+    .rst-gcard .amt b{font-size:25px;font-weight:900;letter-spacing:-1.1px;color:#fff;line-height:1;
+      text-shadow:0 2px 12px rgba(0,0,0,.6);display:flex;align-items:center;gap:5px;}
+    .rst-gcard .amt span{font-size:11.5px;font-weight:800;color:rgba(255,255,255,.72);padding-bottom:2px;}
+    .rst-gcard .meta{padding:13px 15px 15px;}
+    .rst-gcard .meta b{display:block;font-size:14.5px;font-weight:800;letter-spacing:-.3px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-gcard .meta .s{font-size:12px;color:var(--tx2);margin-top:3px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-gcard .wash{position:absolute;left:0;right:0;bottom:0;height:3px;
+      background:linear-gradient(90deg,var(--a1),var(--a2));}
+
+    /* ================= item chips ================= */
+    .rst-ichips{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
+    .rst-ichip{display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:18px;background:var(--card);
+      border:1px solid var(--edge);cursor:pointer;transition:.14s;min-width:0;}
+    .rst-ichip:hover{border-color:var(--a1);transform:translateY(-2px);}
+    .rst-ichip .mult{font:900 15px var(--rf);color:#fff;min-width:52px;height:44px;border-radius:14px;flex:none;
+      display:grid;place-items:center;letter-spacing:-.5px;background:linear-gradient(145deg,var(--a1),var(--a2));}
+    .rst-ichip .nm{flex:1;min-width:0;}
+    .rst-ichip .nm b{display:block;font-size:14.5px;font-weight:800;letter-spacing:-.2px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-ichip .nm .s{font-size:12px;color:var(--tx2);margin-top:2px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-ichip .amt{font:900 17px var(--rf);color:var(--cash);letter-spacing:-.6px;white-space:nowrap;}
+
+    /* ================= sections ================= */
+    .rst-h{display:flex;align-items:baseline;gap:12px;margin:30px 0 15px;}
+    .rst-h h2{margin:0;font-size:21px;font-weight:900;letter-spacing:-.7px;}
+    .rst-h .c{font-size:13px;color:var(--tx2);}
+    .rst-h .line{flex:1;height:1px;background:var(--edge);}
+    .rst-secttl{display:flex;align-items:baseline;gap:12px;margin:30px 0 15px;
+      font-size:21px;font-weight:900;letter-spacing:-.7px;color:var(--tx);text-transform:none;}
+    .rst-secttl b{font-weight:900;}
+    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--edge);}
+
+    .rst-seg{display:inline-flex;padding:4px;background:var(--card);border:1px solid var(--edge);border-radius:14px;gap:3px;flex-wrap:wrap;}
+    .rst-seg span, .rst-type{padding:9px 16px;border-radius:11px;font:800 13px var(--rf);color:var(--tx2);
+      cursor:pointer;user-select:none;transition:.13s;border:none;background:none;letter-spacing:-.2px;}
+    .rst-seg span:hover, .rst-type:hover{color:var(--tx);}
+    .rst-seg span.on, .rst-type.on{background:linear-gradient(145deg,var(--a1),var(--a2));color:#fff;}
+    .rst-types,.rst-cats,.rst-yearpick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;}
+    .rst-types .rst-type,.rst-cats .rst-type,.rst-yearpick .rst-type{background:var(--card);border:1px solid var(--edge);}
+    .rst-types .rst-type.on,.rst-cats .rst-type.on,.rst-yearpick .rst-type.on{border-color:transparent;}
+
+    .rst-summary{font-size:13.5px;color:var(--tx2);margin:0 0 16px;}
+    .rst-summary b{color:var(--cash);}
+
+    /* ================= detail ================= */
+    .rst-back{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;background:var(--card);border:1px solid var(--edge);
+      color:var(--tx2);font:800 13px var(--rf);cursor:pointer;padding:9px 15px;border-radius:12px;margin-bottom:18px;}
+    .rst-back:hover{color:var(--tx);border-color:var(--edge2);}
+    .rst-dhead{display:flex;gap:24px;align-items:center;padding:28px;border-radius:26px;margin-bottom:20px;flex-wrap:wrap;
+      background:radial-gradient(110% 150% at 0% 0%,color-mix(in srgb,var(--a1) 26%,var(--card)),var(--card));
+      border:1px solid var(--edge2);}
+    .rst-dhead img{width:112px;height:112px;border-radius:24px;background:var(--card2);flex:none;object-fit:cover;
+      box-shadow:0 14px 34px rgba(0,0,0,.45);}
+    .rst-dhead h2{margin:0 0 7px;font-size:30px;font-weight:900;letter-spacing:-1.1px;line-height:1.1;}
+    .rst-dhead .meta{font-size:13px;color:var(--tx2);line-height:1.8;}
+    .rst-dhead .big{margin-left:auto;text-align:right;}
+    .rst-dhead .big b{display:flex;align-items:center;gap:9px;font-size:44px;font-weight:900;color:var(--cash);letter-spacing:-2px;line-height:1;}
+    .rst-dhead .big small{font-size:12.5px;color:var(--tx2);font-weight:700;display:block;margin-top:8px;}
+
+    .rst-catbar{display:flex;height:14px;border-radius:8px;overflow:hidden;margin-bottom:12px;background:var(--card2);gap:2px;}
+    .rst-catbar i{border-radius:3px;}
+    .rst-catkey{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--tx2);margin-bottom:8px;}
+    .rst-catkey span{display:flex;align-items:center;gap:7px;}
+    .rst-catkey i{width:11px;height:11px;border-radius:4px;display:inline-block;}
+
+    .rst-item{display:flex;align-items:center;gap:14px;padding:14px 17px;border-radius:18px;margin-bottom:9px;
+      background:var(--card);cursor:pointer;border:1px solid var(--edge);transition:.14s;}
+    .rst-item:hover{border-color:var(--a1);}
+    .rst-item .x{font:900 14px var(--rf);color:#fff;background:linear-gradient(145deg,var(--a1),var(--a2));
+      border-radius:13px;padding:9px 13px;flex:none;min-width:56px;text-align:center;letter-spacing:-.4px;}
+    .rst-item .nm{flex:1;min-width:0;}
+    .rst-item .nm b{display:block;font-weight:800;font-size:15px;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-item .nm small{color:var(--tx2);font-size:12.5px;}
+    .rst-item .tot{font:900 19px var(--rf);color:var(--cash);white-space:nowrap;display:flex;align-items:center;gap:6px;letter-spacing:-.7px;}
+    .rst-item .tot small{color:var(--tx2);font-weight:700;font-size:11.5px;letter-spacing:0;}
+    .rst-txs{margin:-4px 0 14px 30px;border-left:2px solid var(--edge2);padding-left:18px;}
+    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:7px 0;font-size:13px;color:var(--tx2);}
+    .rst-tx b{color:var(--tx);font-weight:800;}
+
+    /* ================= charts ================= */
+    .rst-chart{display:flex;align-items:flex-end;gap:5px;height:250px;padding:22px;background:var(--card);
+      border:1px solid var(--edge);border-radius:24px;overflow-x:auto;}
+    .rst-chart .bar{flex:1;min-width:11px;border-radius:7px 7px 3px 3px;
+      background:linear-gradient(180deg,var(--a1),color-mix(in srgb,var(--a2) 70%,transparent));transition:filter .12s;}
+    .rst-chart .bar:hover{filter:brightness(1.35);}
+    .rst-chart .bar.zero{background:var(--card2);}
+    .rst-axis{display:flex;justify-content:space-between;font-size:12px;color:var(--tx2);padding:12px 6px 0;font-weight:600;}
+    .rst-cum{background:var(--card);border:1px solid var(--edge);border-radius:24px;padding:18px;height:250px;}
+    .rst-cum svg{width:100%;height:100%;display:block;}
+    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--gap);}
+    .rst-habit .t{font-size:13px;color:var(--tx2);margin-bottom:11px;font-weight:600;}
+    .rst-habit b{color:var(--tx);}
+
+    /* ================= data sheet ================= */
+    .rst-sheetwrap{background:var(--card);border:1px solid var(--edge);border-radius:22px;overflow:hidden;}
+    .rst-table{width:100%;border-collapse:collapse;font-size:14px;}
+    .rst-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--tx2);
+      padding:15px 20px;background:var(--card2);font-weight:900;border:none;position:static;}
+    .rst-table td{padding:14px 20px;border-top:1px solid var(--edge);}
+    .rst-table tr:hover td{background:var(--card2);}
+    .rst-table .r{text-align:right;white-space:nowrap;}
+    .rst-table .g{color:var(--cash);font-weight:900;letter-spacing:-.3px;}
+    .rst-table .up{color:var(--hot);font-weight:900;}
+    .rst-table .down{color:var(--cash);font-weight:900;}
+    .rst-table .flat{color:var(--tx2);}
+    .rst-table b{font-weight:800;}
+
+    /* ================= misc ================= */
+    .rst-mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--gap);}
+    .rst-ms{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:20px 22px;min-width:0;}
+    .rst-ms .k{font-size:11px;color:var(--tx2);font-weight:900;text-transform:uppercase;letter-spacing:1.4px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-ms .v{font-size:29px;font-weight:900;margin-top:10px;display:flex;align-items:center;gap:7px;
+      white-space:nowrap;letter-spacing:-1.3px;line-height:1.05;}
+    .rst-ms .v small{font-size:14px;color:var(--tx2);font-weight:800;letter-spacing:0;}
+    .rst-ms .s{font-size:12.5px;color:var(--tx2);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+    /* the glyph is sized off the surrounding text, so it needs pulling back
+       wherever that text is display-scale */
+    .rst-rbx{display:inline-block;width:.8em;height:.8em;vertical-align:-.06em;flex:none;}
+    .rst-wrap-hero .v .rst-rbx, .rst-display .rst-rbx{width:.52em;height:.52em;opacity:.9;}
+    .rst-dhead .big .rst-rbx{width:.62em;height:.62em;}
+    .rst-wrap-hero .v .rst-rbxs{transform:scale(1.6);margin:0 10px 0 6px;}
+    .rst-rbx svg{width:100%;height:100%;display:block;}
+    .rst-rbxs{display:inline-block;vertical-align:-.14em;margin-right:3px;flex:none;}
+
+    .rst-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px;}
+    .rst-chip{font-size:11px;font-weight:800;padding:4px 10px;border-radius:8px;background:var(--card2);
+      color:var(--tx2);border:1px solid var(--edge);letter-spacing:-.1px;}
+    .rst-chip.pass{color:#6cc9ff;} .rst-chip.prod{color:#bda4ff;} .rst-chip.serv{color:#ffb27a;}
+    .rst-chip.inf{color:var(--warn);}
+    .rst-meter{height:5px;border-radius:4px;background:var(--card2);margin-top:10px;overflow:hidden;}
+    .rst-meter i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--a1),var(--a2));}
+
+    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:var(--gap);}
+    .rst-card{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:22px;}
+    .rst-card .t{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--tx2);font-weight:900;}
+    .rst-card .b{font-size:21px;font-weight:900;margin:10px 0 5px;letter-spacing:-.7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-card .s{font-size:13px;color:var(--tx2);}
+
+    .rst-timeline{position:relative;}
+    .rst-mile{display:flex;gap:16px;align-items:flex-start;padding:14px 0 14px 22px;position:relative;
+      border-left:2px solid var(--edge2);}
+    .rst-mile .dot{position:absolute;left:-7px;top:19px;width:12px;height:12px;border-radius:50%;
+      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 0 0 4px var(--ink);}
+    .rst-mile .dot.count{background:linear-gradient(145deg,var(--a2),var(--hot));}
+    .rst-mile b{font-size:15.5px;font-weight:800;letter-spacing:-.2px;}
+    .rst-mile .s{font-size:12.5px;color:var(--tx2);margin-top:3px;}
+
+    .rst-recon{border-radius:22px;padding:20px 24px;margin-bottom:20px;border:1px solid;}
+    .rst-recon.ok{background:color-mix(in srgb,var(--cash) 11%,transparent);border-color:color-mix(in srgb,var(--cash) 38%,transparent);}
+    .rst-recon.off{background:color-mix(in srgb,var(--warn) 11%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent);}
+    .rst-recon .t{font-weight:900;font-size:17px;margin-bottom:7px;letter-spacing:-.4px;}
+    .rst-recon .s{font-size:13.5px;color:var(--tx2);line-height:1.75;}
+    .rst-recon b{color:var(--tx);}
+
+    .rst-money-top{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:10px;}
+    .rst-money-top .rst-tile{flex:1;min-width:270px;}
+    .rst-wrap-hero{border-radius:28px;padding:36px;margin-bottom:20px;border:1px solid var(--edge2);
+      background:radial-gradient(120% 150% at 100% 0%,color-mix(in srgb,var(--a2) 32%,var(--card)),var(--card));}
+    .rst-wrap-hero .k{font-size:12px;color:var(--tx2);font-weight:900;text-transform:uppercase;letter-spacing:2.4px;}
+    .rst-wrap-hero .v{display:flex;align-items:center;gap:12px;font-size:clamp(44px,6vw,72px);font-weight:900;
+      letter-spacing:-3.4px;line-height:1;margin:14px 0 12px;}
+    .rst-wrap-hero .usd{font-size:14.5px;color:var(--tx2);}
+    .rst-wrap-hero .usd b{color:var(--tx);}
+
+    .rst-empty{text-align:center;color:var(--tx2);padding:70px 20px;}
+    .rst-empty .ico{width:78px;height:78px;margin:0 auto 22px;border-radius:26px;display:grid;place-items:center;color:#fff;
+      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 16px 40px color-mix(in srgb,var(--a1) 40%,transparent);}
+    .rst-empty .ico svg{width:40px;height:40px;}
+    .rst-empty h3{margin:0 0 12px;font-size:30px;font-weight:900;color:var(--tx);letter-spacing:-1.2px;}
+    .rst-empty p{margin:0 auto 26px;max-width:500px;font-size:15px;line-height:1.75;}
+    .rst-steps{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:28px;}
+    .rst-step{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:22px;width:225px;text-align:left;}
+    .rst-step .n{width:30px;height:30px;border-radius:11px;color:#fff;font:900 14px var(--rf);
+      background:linear-gradient(145deg,var(--a1),var(--a2));display:grid;place-items:center;margin-bottom:13px;}
+    .rst-step b{display:block;font-size:15px;color:var(--tx);margin-bottom:5px;font-weight:800;}
+    .rst-step span{font-size:13px;line-height:1.65;}
+
+    .rst-note{font-size:13px;color:var(--tx2);margin-top:18px;line-height:1.75;}
+    a.rst-link{color:var(--a1);text-decoration:none;font-weight:700;}
+    a.rst-link:hover{text-decoration:underline;}
+    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;
+      border-bottom:1px solid var(--edge);font-size:14px;}
+    .rst-exrow small{color:var(--tx2);}
+
+    /* ================= settings ================= */
+    .rst-set{background:var(--card);border:1px solid var(--edge);border-radius:24px;padding:24px 26px;margin-bottom:var(--gap);}
+    .rst-set h4{margin:0 0 6px;font-size:19px;font-weight:900;letter-spacing:-.6px;}
+    .rst-set p{margin:0 0 17px;font-size:13.5px;color:var(--tx2);line-height:1.75;}
+    .rst-set .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+    .rst-flabel{font-size:13.5px;color:var(--tx2);font-weight:600;}
+    .rst-num{width:104px;height:44px;background:var(--card2);border:1px solid var(--edge2);color:var(--tx);
+      border-radius:13px;padding:0 14px;font:800 14px var(--rf);}
+    .rst-switch{display:flex;align-items:center;gap:13px;font-size:14.5px;color:var(--tx);cursor:pointer;
+      user-select:none;padding:11px 0;font-weight:600;}
+    .rst-switch input{appearance:none;width:46px;height:27px;border-radius:999px;background:var(--card2);
+      border:1px solid var(--edge2);position:relative;cursor:pointer;transition:.15s;flex:none;margin:0;}
+    .rst-switch input:checked{background:linear-gradient(145deg,var(--a1),var(--a2));border-color:transparent;}
+    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;
+      background:#fff;transition:transform .16s;}
+    .rst-switch input:checked:after{transform:translateX(19px);}
+    .rst-switch .sub{font-size:12.5px;color:var(--tx2);display:block;font-weight:500;margin-top:2px;}
+    .rst-swatches{display:flex;gap:11px;flex-wrap:wrap;}
+    .rst-sw{width:44px;height:44px;border-radius:15px;cursor:pointer;border:3px solid transparent;transition:.14s;}
+    .rst-sw:hover{transform:scale(1.08);}
+    .rst-sw.on{border-color:var(--tx);}
+    .rst-log{margin:0;padding:18px;background:rgba(0,0,0,.45);color:var(--tx2);border-radius:16px;max-height:260px;
+      overflow:auto;font:11.5px/1.7 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
+
+    /* ================= motion ================= */
+    @keyframes rst-rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+    .rst-rise{animation:rst-rise .42s cubic-bezier(.2,.9,.3,1) both;}
+    @media (prefers-reduced-motion:reduce){.rst-rise{animation:none;}}
+
+    /* ================= hero chart ================= */
+    .rst-stage{padding-bottom:0;}
+    .rst-stage .stagetop{display:flex;align-items:center;gap:30px;justify-content:space-between;flex-wrap:wrap;
+      padding-bottom:20px;position:relative;z-index:2;}
+    .rst-stage .glow{position:absolute;width:520px;height:520px;left:-160px;top:-260px;pointer-events:none;
+      background:radial-gradient(circle,color-mix(in srgb,var(--a1) 42%,transparent),transparent 66%);filter:blur(18px);}
+    .rst-area{position:relative;height:170px;margin:0 -36px;color:var(--tx);}
+    .rst-area svg{width:100%;height:100%;display:block;}
+    .rst-area .hover{position:absolute;inset:0;display:flex;}
+    .rst-area .hover i{flex:1;cursor:crosshair;}
+    .rst-area .hover i:hover{background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--a1) 22%,transparent));}
+    .rst-stage .rst-axis{padding:0 0 20px;}
+
+    .rst-donutwrap{position:relative;width:140px;height:140px;flex:none;}
+    .rst-donutwrap svg{width:100%;height:100%;display:block;transform:rotate(-4deg);}
+    .rst-donutwrap .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
+    .rst-donutwrap .mid b{font-size:26px;font-weight:900;letter-spacing:-1px;line-height:1;}
+    .rst-donutwrap .mid span{font-size:10.5px;color:var(--tx2);font-weight:800;text-transform:uppercase;
+      letter-spacing:.9px;max-width:104px;text-align:center;line-height:1.25;}
+
+    /* ================= per-game colour identity ================= */
+    .rst-gcard{--hue:210;}
+    .rst-gcard .cover{background:linear-gradient(145deg,hsl(var(--hue) 62% 26%),hsl(var(--hue) 55% 12%));}
+    .rst-gcard .rank.top{background:linear-gradient(145deg,hsl(var(--hue) 85% 62%),hsl(var(--hue) 75% 45%));}
+    .rst-gcard .wash{background:linear-gradient(90deg,hsl(var(--hue) 85% 60%),hsl(var(--hue) 70% 45%));}
+    .rst-gcard:hover{border-color:hsl(var(--hue) 80% 58%);
+      box-shadow:0 20px 46px rgba(0,0,0,.55), 0 0 0 1px hsl(var(--hue) 80% 58% / .35),
+                 0 14px 50px hsl(var(--hue) 80% 50% / .28);}
+
+    /* ================= menu + palette ================= */
+    .rst-menu{position:absolute;top:76px;right:var(--pad);z-index:40;min-width:250px;background:var(--card);
+      border:1px solid var(--edge2);border-radius:20px;padding:8px;display:none;box-shadow:0 24px 60px rgba(0,0,0,.65);}
+    .rst-menu.on{display:block;}
+    .rst-menu button{display:flex;align-items:center;gap:12px;width:100%;background:none;border:none;color:var(--tx);
+      font:700 14px var(--rf);padding:12px 13px;border-radius:13px;cursor:pointer;text-align:left;}
+    .rst-menu button:hover{background:var(--card2);}
+    .rst-menu button.danger{color:var(--hot);}
+    .rst-menu hr{border:none;border-top:1px solid var(--edge);margin:7px 4px;}
+    .rst-menu svg{width:17px;height:17px;opacity:.75;flex:none;}
+
+    #rst-cmd{position:absolute;inset:0;z-index:60;background:rgba(2,3,6,.6);backdrop-filter:blur(4px);display:none;
+      align-items:flex-start;justify-content:center;padding-top:13vh;}
+    #rst-cmd.on{display:flex;}
+    #rst-cmd .box{width:min(660px,92%);background:var(--card);border:1px solid var(--edge2);border-radius:24px;
+      overflow:hidden;box-shadow:0 40px 90px rgba(0,0,0,.7);}
+    #rst-cmd input{width:100%;height:64px;background:none;border:none;border-bottom:1px solid var(--edge);
+      color:var(--tx);padding:0 24px;font:17px var(--rf);}
+    #rst-cmd input:focus{outline:none;}
+    #rst-cmd .list{max-height:380px;overflow:auto;padding:10px;}
+    #rst-cmd .row{display:flex;align-items:center;gap:13px;padding:13px 15px;border-radius:14px;cursor:pointer;font-size:14.5px;font-weight:600;}
+    #rst-cmd .row.sel{background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 26%,transparent),transparent);}
+    #rst-cmd .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    #rst-cmd .row .h{font-size:12px;color:var(--tx2);font-weight:700;}
+    #rst-cmd .row svg{width:17px;height:17px;color:var(--tx2);flex:none;}
+    #rst-cmd .none{padding:28px;text-align:center;color:var(--tx2);font-size:14px;}
+
+    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(2,3,6,.82);display:none;
+      align-items:center;justify-content:center;padding:24px;}
+    #rst-diag.open{display:flex;}
+    #rst-diag .box{width:min(920px,100%);height:min(660px,100%);background:#0c0e14;border:1px solid rgba(255,255,255,.13);
+      border-radius:24px;display:flex;flex-direction:column;overflow:hidden;color:#fbfcfe;
+      --rf:"Builder Sans",system-ui,sans-serif;--tx:#fbfcfe;--tx2:#7e8a9c;--edge:rgba(255,255,255,.06);
+      --edge2:rgba(255,255,255,.13);--card:#141821;--card2:#1b202b;--a1:#00a2ff;--a2:#a077ff;--ink:#05060a;--pad:22px;
+      font:15px var(--rf);}
+    #rst-diag textarea{flex:1;background:#05060a;color:#c8ced6;border:none;padding:20px;resize:none;
+      font:12px/1.75 ui-monospace,Consolas,monospace;}
+    #rst-diag textarea:focus{outline:none;}
+    `);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Motion and identity
+   * ------------------------------------------------------------------ */
+
+  // Each game gets a stable hue from its name, so a game looks the same every
+  // time you see it even before its cover art has loaded.
+  function gameHue(str) {
+    let h = 0;
+    for (let i = 0; i < String(str).length; i++) h = (h * 31 + String(str).charCodeAt(i)) % 360;
+    return h;
+  }
+
+  // Big numbers count up once, on first paint of a view.
+  function countUp() {
+    if (typeof requestAnimationFrame !== 'function' || !overlay) return;
+    overlay.querySelectorAll('[data-count]').forEach(el => {
+      const target = parseFloat(el.getAttribute('data-count'));
+      if (!isFinite(target) || target <= 0) return;
+      const prefix = el.getAttribute('data-prefix') || '';
+      const dur = 850, t0 = performance.now();
+      const step = now => {
+        const p = Math.min(1, (now - t0) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = prefix + fmt(target * eased);
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  // Cards rise in on a short stagger — enough to feel deliberate, not slow.
+  function stagger(selector, max) {
+    if (!overlay) return;
+    const els = overlay.querySelectorAll(selector);
+    for (let i = 0; i < els.length && i < (max || 24); i++) {
+      els[i].style.animationDelay = (i * 34) + 'ms';
+      els[i].classList.add('rst-rise');
+    }
+  }
+
+  function afterRender() {
+    countUp();
+    stagger('.rst-tile', 12);
+    stagger('.rst-gcard', 24);
+    stagger('.rst-ichip', 20);
+    stagger('.rst-ms', 10);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Charts
+   * ------------------------------------------------------------------ */
+
+  // Area chart with a gradient fill, a soft grid and month markers.
+  function areaChart(months, opts) {
+    if (months.length < 2) return '';
+    const o = opts || {};
+    const W = 1000, H = 260, pad = 6;
+    const max = Math.max(...months.map(m => m.total)) || 1;
+    const x = i => (i / (months.length - 1)) * W;
+    const y = v => H - pad - (v / max) * (H - pad * 2);
+    const line = months.map((m, i) => `${x(i).toFixed(1)},${y(m.total).toFixed(1)}`).join(' ');
+    const id = 'g' + Math.random().toString(36).slice(2, 7);
+    const peak = months.reduce((a, b, i) => b.total > months[a].total ? i : a, 0);
+
+    return `
+      <div class="rst-area">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--a1)" stop-opacity=".55"/>
+              <stop offset="100%" stop-color="var(--a1)" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          ${[0.25, 0.5, 0.75].map(f => `<line x1="0" y1="${H * f}" x2="${W}" y2="${H * f}"
+            stroke="currentColor" stroke-opacity=".07" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('')}
+          <polygon points="0,${H} ${line} ${W},${H}" fill="url(#${id})"></polygon>
+          <polyline points="${line}" fill="none" stroke="var(--a1)" stroke-width="2.5"
+            vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"></polyline>
+          <circle cx="${x(peak)}" cy="${y(months[peak].total)}" r="4" fill="var(--a1)"
+            stroke="var(--card)" stroke-width="2" vector-effect="non-scaling-stroke"></circle>
+        </svg>
+        <div class="hover">${months.map((m, i) => `<i title="${m.date.toLocaleString(undefined, { month: 'long', year: 'numeric' })} — ${fmt(m.total)} R$"></i>`).join('')}</div>
+      </div>
+      ${o.axis === false ? '' : `<div class="rst-axis">
+        <span>${months[0].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
+        <span>peak ${months[peak].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })} · ${fmt(months[peak].total)} R$</span>
+        <span>${months[months.length - 1].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
+      </div>`}`;
+  }
+
+  // Donut with the headline number in the middle.
+  function donut(cats, total, centreLabel, centreValue) {
+    const R = 54, SW = 20, C = 2 * Math.PI * R;
+    let off = 0;
+    const rings = cats.slice(0, 6).map(([c, v]) => {
+      const len = (v / total) * C - 2;
+      const seg = `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${catColor(c)}" stroke-width="${SW}"
+        stroke-linecap="round" stroke-dasharray="${Math.max(0, len).toFixed(2)} ${(C - Math.max(0, len)).toFixed(2)}"
+        stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
+      off += (v / total) * C;
+      return seg;
+    }).join('');
+    return `<div class="rst-donutwrap">
+      <svg viewBox="0 0 140 140">${rings}</svg>
+      <div class="mid"><b>${centreValue}</b><span>${centreLabel}</span></div>
+    </div>`;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Icon rail
+   * ------------------------------------------------------------------ */
+  function renderNav() {
+    const nav = $('#rst-nav');
+    if (!nav) return;
+    nav.innerHTML = PAGES.map(p => p.grp
+      ? `<div class="rst-rdiv"></div>`
+      : `<button class="rst-nav ${ui.tab === p.id ? 'on' : ''}" data-tab="${p.id}">
+           ${ICONS[p.icon] || ICONS.pie}<span class="tip">${escapeHtml(p.label)}</span>
+         </button>`).join('');
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Dashboard — one big number, then the answers around it
+   * ------------------------------------------------------------------ */
+  function renderOverview(body) {
+    const spend = activeSpend();
+    const games = sortGames(buildGames(spend));
+    const total = games.reduce((s, g) => s + g.total, 0);
+    const months = monthly(spend);
+    const mon = tracksCurrency() ? moneyStats() : null;
+    const cmp = comparisons()[0];
+    const st = streaks();
+    const rc = reconcile();
+    const hab = habitStats();
+
+    const catTotals = new Map();
+    for (const r of spend) if (r.amount) catTotals.set(categoryOf(r.itemType), (catTotals.get(categoryOf(r.itemType)) || 0) + r.amount);
+    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
+    const top = cats[0];
+
+    const delta = cmp ? cmp.delta : 0;
+    const dcls = delta > 0.5 ? 'up' : delta < -0.5 ? 'down' : 'flat';
+    const { min } = dateRange(spend);
+
+    body.innerHTML = `
+      <section class="rst-stage">
+        <div class="glow"></div>
+        <div class="stagetop">
+          <div>
+            <div class="eyebrow">Total spent · ${rangeLabel()}</div>
+            <div class="rst-display">${robuxGlyph(28)}<span data-count="${total}">0</span></div>
+            <div class="cap">
+              <b>${fmt(spend.length)}</b> purchases across <b>${fmt(games.length)}</b> games${
+                min ? `, going back to <b>${monthYear(min)}</b>` : ''}.
+              ${mon && mon.paid ? `That's roughly <b>${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b>
+                of real money at the rate you actually bought Robux at.` : ''}
+            </div>
+          </div>
+          ${cats.length ? donut(cats, total, cats[0][0], ((cats[0][1] / total) * 100).toFixed(0) + '%') : ''}
+        </div>
+        ${areaChart(months)}
+      </section>
+
+      <div class="rst-tiles">
+        <div class="rst-tile accent">
+          <div class="lb">Really paid</div>
+          <div class="big money">${mon && mon.paid ? moneyStr(mon.paid) : '—'}</div>
+          <div class="sm">${mon && mon.paid
+            ? `${fmt(mon.matchedRobux)} R$ bought · ${moneyStr(mon.matchedRobux ? (mon.paid / mon.matchedRobux) * 1000 : 0)} per 1,000`
+            : 'Track Robux purchases to reconcile this'}</div>
+        </div>
+        <div class="rst-tile">
+          <div class="lb">This month</div>
+          <div class="big">${robuxGlyph(16)}${fmt(cmp ? cmp.now.total : 0)}</div>
+          <div class="sm"><span class="rst-delta ${dcls}">${delta > 0.5 ? '▲' : delta < -0.5 ? '▼' : '='} ${Math.abs(delta).toFixed(0)}%</span>
+            &nbsp;vs ${fmt(cmp ? cmp.prev.total : 0)} last month</div>
+        </div>
+        <div class="rst-tile">
+          <div class="lb">Mostly on</div>
+          <div class="big" style="font-size:24px">${top ? escapeHtml(top[0]) : '—'}</div>
+          <div class="sm">${top ? `${((top[1] / total) * 100).toFixed(0)}% of everything · ${fmt(top[1])} R$` : ''}</div>
+        </div>
+        <div class="rst-tile">
+          <div class="lb">Balance check</div>
+          <div class="big" style="font-size:24px">${rc.actual == null ? '—' : fmt(rc.actual) + ' R$'}</div>
+          <div class="sm">${rc.actual == null ? 'Open roblox.com to read it'
+            : Math.abs(rc.gap) > 50 ? `off by ${fmt(Math.abs(rc.gap))} — see Real money`
+            : 'in and out account for everything'}</div>
+        </div>
+        <div class="rst-tile">
+          <div class="lb">Streak</div>
+          <div class="big">${st ? fmt(st.best) : 0}<small style="font-size:15px;color:var(--tx2);font-weight:800">&nbsp;days</small></div>
+          <div class="sm">${st ? `${fmt(st.days)} days with a purchase` : 'No history yet'}</div>
+        </div>
+        <div class="rst-tile">
+          <div class="lb">Busiest hour</div>
+          <div class="big">${hab.hour.indexOf(Math.max(...hab.hour))}:00</div>
+          <div class="sm">when most of your Robux leaves</div>
+        </div>
+      </div>
+
+      <div class="rst-h"><h2>Where it goes</h2><span class="c">${fmt(games.length)} games</span><span class="line"></span></div>
+      <div class="rst-grid">${games.slice(0, 8).map((g, i) => gameCard(g, i, total)).join('')}</div>`;
+
+    fetchIcons(games.slice(0, 8).map(g => g.universeId)).then(paintIcons);
+  }
+
+
+  /* ------------------------------------------------------------------ *
+   * Games — cover art, not a list
+   * ------------------------------------------------------------------ */
+  function gameCard(g, i, grand) {
+    const pct = grand ? (g.total / grand) * 100 : 0;
+    const icon = g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : '';
+    const hue = gameHue(g.label);
+    return `
+      <article class="rst-gcard" data-game="${escapeHtml(g.key)}" style="--hue:${hue}">
+        <div class="cover">
+          <img data-uni="${g.universeId || ''}" src="${icon}" alt="" loading="lazy">
+          <div class="rank ${i < 3 ? 'top' : ''}">${i + 1}</div>
+          <div class="amt">
+            <b>${robuxGlyph(16)}${fmt(g.total)}</b>
+            <span>${pct.toFixed(1)}%</span>
+          </div>
+        </div>
+        <div class="meta">
+          <b>${escapeHtml(g.label)}</b>
+          <div class="s">${fmt(g.count)} buys · ${fmt(g.items.size)} items · ${ago(g.last)}</div>
+        </div>
+        <i class="wash" style="width:${Math.max(6, pct)}%"></i>
+      </article>`;
+  }
+
+  function renderGames(body) {
+    const recs = ui.cat ? activeSpend().filter(r => categoryOf(r.itemType) === ui.cat) : activeSpend();
+    const games = sortGames(buildGames(recs));
+    const shown = games.filter(g => matchesQuery(g, ui.q));
+    const grand = games.reduce((s, g) => s + g.total, 0) || 1;
+    const shownTotal = shown.reduce((s, g) => s + g.total, 0);
+
+    if (!games.length) {
+      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
+        <h3>Nothing here looks like game spending</h3>
+        <p>${fmt(state.records.length)} records are stored but none carry a Robux amount.
+        Check <b>Purchases</b> is switched on in All transactions, then rescan.</p></div>`;
+      return;
+    }
+    if (!shown.length) {
+      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
+        <h3>No matches</h3><p>Nothing matches “${escapeHtml(ui.q)}”.</p></div>`;
+      return;
+    }
+
+    const allCats = new Map();
+    for (const g of games) for (const [c, v] of g.cats) allCats.set(c, (allCats.get(c) || 0) + v);
+    const catChips = [...allCats.entries()].sort((a, b) => b[1] - a[1]);
+
+    body.innerHTML = `
+      ${catChips.length > 1 ? `<div class="rst-cats">
+        <span class="rst-type ${!ui.cat ? 'on' : ''}" data-cat="">Everything</span>
+        ${catChips.map(([c, v]) => `<span class="rst-type ${ui.cat === c ? 'on' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</span>`).join('')}
+      </div>` : ''}
+      <div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'} ·
+        <b>${fmt(shownTotal)} R$</b>${cfg.showUsd ? ` (about ${usd(shownTotal)})` : ''}</div>
+      <div class="rst-grid">${shown.slice(0, 240).map((g, i) => gameCard(g, i, grand)).join('')}</div>
+      ${shown.length > 240 ? `<div class="rst-note">Showing the top 240 of ${fmt(shown.length)}.</div>` : ''}`;
+
+    fetchIcons(shown.slice(0, 60).map(g => g.universeId)).then(paintIcons);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Items — chips, then the two lists worth reading
+   * ------------------------------------------------------------------ */
+  function renderItems(body) {
+    let items = allItems(activeSpend());
+    if (ui.q) items = items.filter(i => i.name.toLowerCase().includes(ui.q) || (i.game || '').toLowerCase().includes(ui.q) || i.cat.toLowerCase().includes(ui.q));
+    items.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
+      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
+
+    if (!items.length) { body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.tag}</div><h3>Nothing matches</h3></div>`; return; }
+
+    body.innerHTML = `
+      <div class="rst-summary">${fmt(items.length)} different things bought</div>
+      <div class="rst-ichips">
+        ${items.slice(0, 120).map(i => `
+          <div class="rst-ichip">
+            <span class="mult">×${fmt(i.count)}</span>
+            <div class="nm"><b>${escapeHtml(i.name)}</b>
+              <div class="s">${escapeHtml(i.game || i.cat)} · ${fmt(i.total / i.count)} R$ each</div></div>
+            <span class="amt">${fmt(i.total)}</span>
+          </div>`).join('')}
+      </div>
+      ${items.length > 120 ? `<div class="rst-note">Showing the top 120 of ${fmt(items.length)}.</div>` : ''}
+      ${repeatsHtml()}${biggestHtml()}`;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Creators
+   * ------------------------------------------------------------------ */
+  function renderSellers(body) {
+    const map = new Map();
+    for (const r of activeSpend()) {
+      if (!r.amount) continue;
+      const key = r.sellerId != null ? String(r.sellerId) : (r.sellerName || 'unknown');
+      const e = map.get(key) || { id: r.sellerId, name: r.sellerName || 'Unknown', total: 0, count: 0, games: new Set(), last: null };
+      e.total += r.amount; e.count++;
+      if (r.universeId) e.games.add(String(r.universeId));
+      const t = r.created ? new Date(r.created).getTime() : null;
+      if (t && (e.last === null || t > e.last)) e.last = t;
+      map.set(key, e);
+    }
+    let sellers = [...map.values()];
+    if (ui.q) sellers = sellers.filter(s => s.name.toLowerCase().includes(ui.q) || String(s.id) === ui.q);
+    sellers.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
+      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
+
+    if (!sellers.length) { body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.people}</div><h3>Nothing matches</h3></div>`; return; }
+    const grand = sellers.reduce((s, x) => s + x.total, 0) || 1;
+
+    body.innerHTML = `
+      <div class="rst-summary">${fmt(sellers.length)} creators and groups received your Robux</div>
+      <div class="rst-cards">
+        ${sellers.slice(0, 120).map((s, i) => `
+          <div class="rst-card">
+            <div class="t">#${i + 1} · ${fmt(s.games.size)} game${s.games.size === 1 ? '' : 's'}</div>
+            <div class="b">${escapeHtml(s.name)}</div>
+            <div class="s">${fmt(s.count)} purchases · last ${ago(s.last)}</div>
+            <div class="rst-meter"><i style="width:${Math.max(4, (s.total / grand) * 100)}%"></i></div>
+            <div class="b" style="color:var(--cash);margin:12px 0 0;font-size:24px">${fmt(s.total)} R$</div>
+          </div>`).join('')}
+      </div>`;
+  }
+
   /* ------------------------------------------------------------------ *
    * Records — streaks, milestones and the games you walked away from
    * ------------------------------------------------------------------ */
@@ -3327,17 +3530,17 @@
 
     let html = reconHtml + `
       <div class="rst-money-top">
-        <div class="rst-total" style="flex:1">
-          <div class="k">You actually paid</div>
-          <div class="v">${moneyStr(m.paid)}</div>
-          <div class="usd">${fmt(m.matchedRobux)} R$ bought across ${fmt(m.matchedRows)} purchases${
+        <div class="rst-tile accent" style="flex:1.6;min-width:320px">
+          <div class="lb">You actually paid</div>
+          <div class="big money" style="font-size:44px;letter-spacing:-2px">${moneyStr(m.paid)}</div>
+          <div class="sm">${fmt(m.matchedRobux)} R$ bought across ${fmt(m.matchedRows)} purchases${
             m.unmatchedRobux ? ` · <b style="color:var(--warn)">${fmt(m.unmatchedRobux)} R$ unmatched</b>` : ''}</div>
         </div>
-        <div class="rst-mini-stats" style="flex:1.4">
-          ${msCard('Your real rate', moneyStr(rate), 'per 1,000 R$')}
-          ${msCard('Spent in games', rbx(spendTotal), rate ? 'worth ' + moneyStr(spentValue) : '')}
-          ${msCard('Still unspent', rbx(Math.max(0, m.robux - spendTotal)), 'bought but not spent')}
-          ${msCard('Purchases', fmt(m.rows.length), 'Robux top-ups')}
+        <div class="rst-tiles" style="flex:2;margin:0">
+          ${tile('Your real rate', moneyStr(rate), 'per 1,000 R$')}
+          ${tile('Spent in games', fmt(spendTotal) + ' R$', rate ? 'worth ' + moneyStr(spentValue) : '')}
+          ${tile('Still unspent', fmt(Math.max(0, m.robux - spendTotal)) + ' R$', 'bought but not spent')}
+          ${tile('Top-ups', fmt(m.rows.length), 'separate Robux purchases')}
         </div>
       </div>`;
 
