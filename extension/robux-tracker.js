@@ -262,6 +262,8 @@
 
   const ui = {
     open: false, tab: 'games', gameKey: null, q: '', sort: 'total', range: 'all',
+    // date window on a game's page: from/to are YYYY-MM-DD, fromTs pins an exact purchase
+    win: { from: '', to: '', fromTs: null },
     expanded: new Set(),
     iconCache: store.get('icons', {})
   };
@@ -673,7 +675,7 @@
     if (state.running) { setStatus('Wait for the current scan to finish.'); return; }
     const out = [];
     out.push('Robux Tracker — diagnostics ' + new Date().toISOString());
-    out.push('script v5.1.0 · page ' + location.pathname);
+    out.push('script v5.2.0 · page ' + location.pathname);
     try {
       if (!state.me) state.me = await getAuthedUser();
       out.push(`logged in as ${state.me.name} (#${state.me.id})`);
@@ -1142,8 +1144,29 @@
       align-items:center;gap:5px;}
     .rst-item .tot small{color:var(--tx2);font-weight:600;font-size:11px;}
     .rst-txs{margin:-2px 0 10px 26px;border-left:2px solid var(--line);padding-left:14px;}
-    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;color:var(--tx2);}
-    .rst-tx b{color:var(--tx);font-weight:600;}
+    .rst-tx{display:flex;align-items:center;gap:12px;padding:5px 6px;font-size:12.5px;color:var(--tx2);border-radius:7px;}
+    .rst-tx:hover{background:var(--card);}
+    .rst-tx b{color:var(--tx);font-weight:600;margin-left:auto;white-space:nowrap;}
+    .rst-tx .pos{font-weight:700;color:var(--tx);min-width:46px;}
+    .rst-tx .when{white-space:nowrap;}
+    .rst-tx .after{color:var(--acc);white-space:nowrap;}
+    .rst-tx .from{background:none;border:1px solid var(--line);color:var(--tx2);border-radius:6px;padding:2px 8px;
+      font:600 11px var(--rst-font);cursor:pointer;opacity:0;transition:opacity .12s;white-space:nowrap;}
+    .rst-tx:hover .from, .rst-tx.pinned .from{opacity:1;}
+    .rst-tx .from:hover{color:var(--tx);border-color:var(--acc);}
+    .rst-tx.pinned{background:rgba(0,162,255,.12);}
+    .rst-tx.pinned .from{border-color:var(--acc);color:var(--acc);}
+
+    .rst-window{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:10px 12px;
+      background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:13px;color:var(--tx2);}
+    .rst-window .lbl{font-weight:600;color:var(--tx);margin-right:4px;}
+    .rst-window label{display:flex;align-items:center;gap:6px;}
+    .rst-window input[type=date]{height:32px;background:var(--card2);border:1px solid var(--line);color:var(--tx);
+      border-radius:8px;padding:0 8px;font:13px var(--rst-font);color-scheme:dark;}
+    #rst-panel[data-theme="light"] .rst-window input[type=date]{color-scheme:light;}
+    .rst-window .rst-type{padding:5px 11px;font-size:12px;}
+    .rst-winsum{font-size:13px;color:var(--tx2);margin:0 0 14px;padding:0 2px;}
+    .rst-winsum b{color:var(--tx);}
 
     /* ---------- chart / tables ---------- */
     .rst-chart{display:flex;align-items:flex-end;gap:4px;height:200px;padding:14px;background:var(--card);
@@ -1848,9 +1871,79 @@
     fetchIcons(shown.slice(0, 120).map(g => g.universeId)).then(paintIcons);
   }
 
+  /* ------------------------------------------------------------------ *
+   * Date window for a single game
+   *
+   * "I bought 100 of these - how many after this date?" The window narrows
+   * every count on the game page, and each purchase in an item's list knows
+   * its position, so you can start counting from any one of them.
+   * ------------------------------------------------------------------ */
+  const windowActive = () => !!(ui.win.from || ui.win.to || ui.win.fromTs != null);
+  function resetWindow() { ui.win = { from: '', to: '', fromTs: null }; }
+
+  const localDay = t => {
+    const d = new Date(t);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  };
+
+  function inWindow(r) {
+    if (!windowActive()) return true;
+    if (!r.created) return false;
+    const t = new Date(r.created).getTime();
+    const from = ui.win.fromTs != null ? ui.win.fromTs
+      : ui.win.from ? new Date(ui.win.from + 'T00:00:00').getTime() : -Infinity;
+    const to = ui.win.to ? new Date(ui.win.to + 'T23:59:59.999').getTime() : Infinity;
+    return t >= from && t <= to;
+  }
+
+  // Same item keys as buildGames, so expanded rows stay open when the window moves.
+  function summarize(txs) {
+    const cats = new Map(), items = new Map();
+    let total = 0, count = 0, first = null, last = null;
+    for (const r of txs) {
+      if (!r.amount) continue;
+      total += r.amount; count++;
+      const t = r.created ? new Date(r.created).getTime() : null;
+      if (t) { if (first === null || t < first) first = t; if (last === null || t > last) last = t; }
+      const cat = categoryOf(r.itemType);
+      cats.set(cat, (cats.get(cat) || 0) + r.amount);
+      const ikey = cat + '|' + (r.itemName || r.itemType || 'item') + '|' + (r.itemId || '');
+      let it = items.get(ikey);
+      if (!it) {
+        it = { key: ikey, name: r.itemName || r.itemType || 'Item', cat, itemId: r.itemId, count: 0, total: 0, last: null, txs: [] };
+        items.set(ikey, it);
+      }
+      it.count++; it.total += r.amount; it.txs.push(r);
+      if (t && (it.last === null || t > it.last)) it.last = t;
+    }
+    return { total, count, cats, items, first, last };
+  }
+
+  function windowLabel() {
+    if (ui.win.fromTs != null) {
+      return `from ${dtstr(ui.win.fromTs)}` + (ui.win.to ? ` to ${dstr(ui.win.to + 'T12:00')}` : ' onwards');
+    }
+    if (ui.win.from && ui.win.to) return `${dstr(ui.win.from + 'T12:00')} to ${dstr(ui.win.to + 'T12:00')}`;
+    if (ui.win.from) return `from ${dstr(ui.win.from + 'T12:00')} onwards`;
+    if (ui.win.to) return `up to ${dstr(ui.win.to + 'T12:00')}`;
+    return 'all time';
+  }
+
   function renderGameDetail(body) {
-    const g = buildGames(spendRecords()).find(x => x.key === ui.gameKey);
-    if (!g) { ui.gameKey = null; render(); return; }
+    const full = buildGames(spendRecords()).find(x => x.key === ui.gameKey);
+    if (!full) { ui.gameKey = null; render(); return; }
+
+    // everything below reflects the date window; `full` keeps the all-time view
+    const w = summarize(full.txs.filter(inWindow));
+    const g = Object.assign({}, full, { total: w.total, count: w.count, cats: w.cats, items: w.items,
+      first: w.first, last: w.last });
+
+    // chronological position of every purchase of each item, across all time
+    const position = new Map();
+    for (const it of full.items.values()) {
+      const chron = it.txs.slice().sort((a, b) => new Date(a.created) - new Date(b.created));
+      chron.forEach((t, i) => position.set(t, { n: i + 1, of: chron.length, after: chron.length - 1 - i }));
+    }
 
     const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
     const items = [...g.items.values()].sort((a, b) => b.total - a.total || b.count - a.count);
@@ -1867,26 +1960,39 @@
           <div class="meta">
             ${g.sellerName ? 'by ' + escapeHtml(g.sellerName) : 'creator unknown'}
             ${gameUrl ? ` · <a class="rst-link" href="${gameUrl}" target="_blank" rel="noreferrer">open on Roblox ↗</a>` : ''}
-            <br>${fmt(g.count)} purchases · ${fmt(g.items.size)} different items · first ${dstr(g.first)}, last ${dstr(g.last)}
+            <br>${fmt(full.count)} purchases · ${fmt(full.items.size)} different items · first ${dstr(full.first)}, last ${dstr(full.last)}
             ${mostBought ? `<br>most bought: <b style="color:var(--tx)">${escapeHtml(mostBought.name)} ×${fmt(mostBought.count)}</b>` : ''}
           </div>
         </div>
         <div class="big">
           <b>${robuxGlyph(28)}${fmt(g.total)}</b>
-          <small>${cfg.showUsd ? 'about ' + usd(g.total) : 'Robux spent here'}</small>
+          <small>${windowActive() ? `of ${fmt(full.total)} R$ all time` : cfg.showUsd ? 'about ' + usd(g.total) : 'Robux spent here'}</small>
         </div>
       </div>
 
-      <div class="rst-catbar">
+      <div class="rst-window">
+        <span class="lbl">Only count purchases</span>
+        <label>from <input type="date" data-win="from" value="${ui.win.fromTs != null ? localDay(ui.win.fromTs) : ui.win.from}"></label>
+        <label>to <input type="date" data-win="to" value="${ui.win.to}"></label>
+        <span class="rst-type ${!windowActive() ? 'on' : ''}" data-winpreset="all">All time</span>
+        <span class="rst-type" data-winpreset="30">Last 30 days</span>
+        <span class="rst-type" data-winpreset="90">Last 90 days</span>
+        <span class="rst-type" data-winpreset="ytd">This year</span>
+      </div>
+      ${windowActive() ? `<div class="rst-winsum">
+        Showing <b>${fmt(g.count)}</b> of ${fmt(full.count)} purchases (<b>${fmt(g.total)}</b> of ${fmt(full.total)} R$) — ${escapeHtml(windowLabel())}
+      </div>` : ''}
+
+      ${g.total ? `<div class="rst-catbar">
         ${cats.map(([c, v]) => `<i style="width:${(v / g.total) * 100}%;background:${catColor(c)}" title="${escapeHtml(c)}: ${fmt(v)}"></i>`).join('')}
       </div>
       <div class="rst-catkey">
         ${cats.map(([c, v]) => `<span><i style="background:${catColor(c)}"></i>${escapeHtml(c)} — <b style="color:var(--tx)">${fmt(v)} R$</b> (${((v / g.total) * 100).toFixed(0)}%)</span>`).join('')}
-      </div>
+      </div>` : ''}
 
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
         <button class="rst-cta sec" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
-        <span style="font-size:12.5px;color:var(--tx2)">Tap an item to see every purchase and when you made it.</span>
+        <span style="font-size:12.5px;color:var(--tx2)">Tap an item to see every purchase — then “count from here” on any of them.</span>
       </div>`;
 
     const byCat = new Map();
@@ -1913,14 +2019,25 @@
           </div>`;
         if (ui.expanded.has(it.key)) {
           const txs = it.txs.slice().sort((a, b) => new Date(b.created) - new Date(a.created));
-          html += `<div class="rst-txs">` + txs.slice(0, 300).map(t =>
-            `<div class="rst-tx"><span>${dtstr(t.created)}${t.pending ? ' <span style="color:var(--warn)">(pending)</span>' : ''}</span><b>${fmt(t.amount)} R$</b></div>`
-          ).join('') + (txs.length > 300 ? `<div class="rst-note">…and ${fmt(txs.length - 300)} more</div>` : '') + `</div>`;
+          html += `<div class="rst-txs">` + txs.slice(0, 300).map(t => {
+            const p = position.get(t);
+            const ts = new Date(t.created).getTime();
+            const pinned = ui.win.fromTs != null && ts === ui.win.fromTs;
+            return `<div class="rst-tx ${pinned ? 'pinned' : ''}">
+              <span class="pos">#${p ? fmt(p.n) : '?'}</span>
+              <span class="when">${dtstr(t.created)}${t.pending ? ' <span style="color:var(--warn)">(pending)</span>' : ''}</span>
+              <span class="after">${p ? `${fmt(p.after)} bought after` : ''}</span>
+              <button class="from" data-from="${ts}" title="Only count this purchase and the ones after it">count from here</button>
+              <b>${fmt(t.amount)} R$</b>
+            </div>`;
+          }).join('') + (txs.length > 300 ? `<div class="rst-note">…and ${fmt(txs.length - 300)} more</div>` : '') + `</div>`;
         }
       }
     }
 
-    if (!visible.length) html += `<div class="rst-empty">No items match “${escapeHtml(ui.q)}” in this game.</div>`;
+    if (!visible.length) html += windowActive() && !ui.q
+      ? `<div class="rst-empty">No purchases in this game ${escapeHtml(windowLabel())}.</div>`
+      : `<div class="rst-empty">No items match “${escapeHtml(ui.q)}” in this game.</div>`;
     body.innerHTML = html;
     fetchIcons([g.universeId]).then(paintIcons);
   }
@@ -2049,8 +2166,9 @@
   function exportGameCSV() {
     const g = buildGames(spendRecords()).find(x => x.key === ui.gameKey);
     if (!g) return;
-    download(`roblox-${g.label.replace(/[^\w\d]+/g, '-').slice(0, 40)}.csv`, recordsToCsv(g.txs), 'text/csv');
-    setStatus(`Exported ${g.count} purchase(s) for ${g.label}.`);
+    const txs = g.txs.filter(inWindow);
+    download(`roblox-${g.label.replace(/[^\w\d]+/g, '-').slice(0, 40)}.csv`, recordsToCsv(txs), 'text/csv');
+    setStatus(`Exported ${txs.length} purchase(s) for ${g.label}${windowActive() ? ' (' + windowLabel() + ')' : ''}.`);
   }
 
   function exportJSON() {
@@ -2168,7 +2286,7 @@
         else if (act === 'csv-game') exportGameCSV();
         else if (act === 'json') exportJSON();
         else if (act === 'copy') copyReport();
-        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
+        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); resetWindow(); render(); }
         else if (act === 'clear') {
           if (!confirm('Clear all scanned data stored in this browser?\n\nThis only deletes the local cache — nothing on your Roblox account changes.')) return;
           state.records = []; state.ids.clear(); state.pages = 0; state.lastScan = null;
@@ -2197,6 +2315,23 @@
         return;
       }
 
+      const fromEl = e.target.closest('[data-from]');
+      if (fromEl) {
+        ui.win = { from: '', to: '', fromTs: parseInt(fromEl.getAttribute('data-from'), 10) };
+        render();
+        return;
+      }
+
+      const presetEl = e.target.closest('[data-winpreset]');
+      if (presetEl) {
+        const v = presetEl.getAttribute('data-winpreset');
+        resetWindow();
+        if (v === '30' || v === '90') ui.win.from = localDay(Date.now() - parseInt(v, 10) * 864e5);
+        else if (v === 'ytd') ui.win.from = new Date().getFullYear() + '-01-01';
+        render();
+        return;
+      }
+
       const itemEl = e.target.closest('[data-item]');
       if (itemEl) {
         const k = itemEl.getAttribute('data-item');
@@ -2209,9 +2344,19 @@
       if (gameEl) {
         ui.gameKey = gameEl.getAttribute('data-game');
         ui.expanded.clear();
+        resetWindow();
         $('#rst-body').scrollTop = 0;
         render();
       }
+    });
+
+    // typing a date narrows the game page; it replaces any pinned purchase
+    panel.addEventListener('change', e => {
+      const el = e.target.closest('[data-win]');
+      if (!el) return;
+      if (el.getAttribute('data-win') === 'from') { ui.win.from = el.value; ui.win.fromTs = null; }
+      else ui.win.to = el.value;
+      render();
     });
 
     let searchTimer = null;

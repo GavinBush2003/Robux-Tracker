@@ -15,6 +15,10 @@ It runs entirely in your browser. Nothing is uploaded anywhere.
 - **Per-item breakdown** — open a game to see `Gifting VIP ×44 — 35,200 R$`, split into
   Game Passes / Developer Products / Private Servers / Bundles / Catalog. Click any item
   for every individual purchase and its date.
+- **Count from a date** — on any game, narrow every count to a date range ("how many of
+  these did I buy after March?"). Each purchase in an item's list shows its number and how
+  many came after it, and "count from here" starts the range at that exact purchase.
+  Exporting the game respects the range.
 - **Real money values** — reads the package prices off your own Buy Robux page, so totals
   show in your currency at your region's prices. Falls back to built-in US pricing, and
   you can override the currency and rate by hand.
