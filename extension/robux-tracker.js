@@ -6,19 +6,8 @@
 (function () {
   'use strict';
 
-  // Every version has used this same guard, so an older copy still enabled in
-  // Tampermonkey wins the race and the newer one silently does nothing. Say so
-  // out loud instead of looking like the update didn't apply.
-  const VERSION = '8.0.0';
-  if (window.__rstProLoaded) {
-    try {
-      console.warn(`[Robux Tracker] v${VERSION} did not start — v${window.__rstProLoaded} ` +
-        `is already running on this page. Disable or delete the older script in your userscript ` +
-        `manager (look for "Roblox Spend Tracker" or "Coinsight"), then reload.`);
-    } catch (e) {}
-    return;
-  }
-  window.__rstProLoaded = VERSION;
+  if (window.__rstProLoaded) return;
+  window.__rstProLoaded = true;
 
   /* ================================================================== *
    * Storage
@@ -213,11 +202,8 @@
     refRobux: 1000,      // reference pack: the $9.99 tier
     curSymbol: '€',
     curPer1000: 9.99,
-    theme: 'auto',
-    accent: 0,
-    density: 'cozy',
-    home: 'overview',
-    types: ['Purchase', 'CurrencyPurchase'],
+    theme: 'dark',
+    types: ['Purchase'],
     fabPos: null
   };
   const cfg = Object.assign({}, DEFAULTS, store.get('cfg', {}));
@@ -225,12 +211,6 @@
   // Anything absurd gets pulled back to a sane starting point.
   if (!(cfg.delayMs >= MIN_DELAY_MS && cfg.delayMs <= 3000)) cfg.delayMs = DEFAULTS.delayMs;
   cfg.lanes = Math.max(1, Math.min(MAX_LANES, cfg.lanes || 2));
-  // v6 added real-money reconciliation, which needs the currency-purchase rows.
-  // Existing installs opted into 'Purchase' only, so bring them along once.
-  if (!store.get('v6types', false)) {
-    if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
-    store.set('v6types', true); store.set('cfg', cfg);
-  }
   const saveCfg = () => store.set('cfg', cfg);
 
   // transactionType values, paired with the label the Roblox site shows.
@@ -281,9 +261,7 @@
   };
 
   const ui = {
-    open: false, tab: (store.get('cfg', {}) || {}).home || 'overview',
-    cmdQ: '', cmdSel: 0, cmdItems: [], gameKey: null, q: '', sort: 'total', range: 'all',
-    year: null, cat: null,
+    open: false, tab: 'games', gameKey: null, q: '', sort: 'total', range: 'all',
     expanded: new Set(),
     iconCache: store.get('icons', {})
   };
@@ -439,12 +417,8 @@
     const d = tx.details || {};
     const place = d.place || {};
     const isRobux = tx.currency && tx.currency.type === 'Robux';
-    const raw = isRobux ? (tx.currency.amount || 0) : 0;
     return {
       id: tx.id,
-      // Roblox signs the amount: negative leaves your balance, positive arrives.
-      // Reading direction from the row beats guessing it from the type name.
-      dir: raw < 0 ? 'out' : 'in',
       idHash: tx.idHash || null,
       txType: txType,
       created: tx.created,
@@ -674,7 +648,7 @@
     for (let i = 0; i < need.length; i += 50) {
       const chunk = need.slice(i, i + 50);
       try {
-        const r = await fetch(`https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(',')}&size=512x512&format=Png&isCircular=false`);
+        const r = await fetch(`https://thumbnails.roblox.com/v1/games/icons?universeIds=${chunk.join(',')}&size=150x150&format=Png&isCircular=false`);
         if (!r.ok) continue;
         const j = await r.json();
         (j.data || []).forEach(d => { if (d.state === 'Completed' && d.imageUrl) ui.iconCache[String(d.targetId)] = d.imageUrl; });
@@ -699,7 +673,7 @@
     if (state.running) { setStatus('Wait for the current scan to finish.'); return; }
     const out = [];
     out.push('Robux Tracker — diagnostics ' + new Date().toISOString());
-    out.push('script v' + VERSION + ' · page ' + location.pathname);
+    out.push('script v5.1.0 · page ' + location.pathname);
     try {
       if (!state.me) state.me = await getAuthedUser();
       out.push(`logged in as ${state.me.name} (#${state.me.id})`);
@@ -769,13 +743,8 @@
     if (s === null) return true;
     return r.created && new Date(r.created).getTime() >= s;
   }
-  // Records cached before v7 have no direction stored; fall back to the type table.
-  function dirOf(r) {
-    if (r.dir === 'out' || r.dir === 'in') return r.dir;
-    return typeInfo(r.txType).kind === 'out' ? 'out' : 'in';
-  }
-  const spendRecords = () => state.records.filter(r => dirOf(r) === 'out' && inRange(r));
-  const incomeRecords = () => state.records.filter(r => dirOf(r) === 'in' && inRange(r));
+  const spendRecords = () => state.records.filter(r => typeInfo(r.txType).kind === 'out' && inRange(r));
+  const incomeRecords = () => state.records.filter(r => typeInfo(r.txType).kind === 'in' && inRange(r));
 
   function sellerUniverseMap(records) {
     const m = new Map();
@@ -798,7 +767,7 @@
     return out;
   }
 
-  function buildGames(records, keepIgnored) {
+  function buildGames(records) {
     const rescue = cfg.smartMerge ? sellerUniverseMap(records) : new Map();
     const map = new Map();
 
@@ -851,10 +820,7 @@
       it.count++; it.total += r.amount; it.txs.push(r);
       if (t && (it.last === null || t > it.last)) it.last = t;
     }
-    const all = [...map.values()];
-    if (keepIgnored) return all;
-    const ig = ignoredSet();
-    return ig.size ? all.filter(g => !ig.has(g.key)) : all;
+    return [...map.values()];
   }
 
   function sortGames(games) {
@@ -936,524 +902,6 @@
   }
 
   /* ================================================================== *
-   * Real money
-   *
-   * Currency-purchase rows record the exact pack you bought, and pack sizes
-   * map one-to-one onto prices. So instead of valuing your spend at some
-   * average rate, we can add up what you genuinely paid. Anything we can't
-   * match is reported as unmatched rather than guessed at.
-   * ================================================================== */
-  const packOverrides = () => store.get('packOverrides', {});
-
-  function priceForPack(amount) {
-    if (!amount || amount <= 0) return null;
-    const ov = packOverrides();
-    if (ov[amount] != null) return { price: +ov[amount], how: 'price you set' };
-
-    const t = tiers();
-    const exact = t.find(([r]) => r === amount);
-    if (exact) return { price: exact[1], how: `${fmt(exact[0])} R$ pack` };
-
-    // one row can cover several of the same pack bought together
-    for (let i = t.length - 1; i >= 0; i--) {
-      const [r, p] = t[i];
-      if (r > 0 && amount % r === 0) {
-        const n = amount / r;
-        if (n >= 2 && n <= 20) return { price: p * n, how: `${n} × ${fmt(r)} R$ pack` };
-      }
-    }
-    return null;
-  }
-
-  function moneyStats() {
-    const rows = state.records.filter(r => r.txType === 'CurrencyPurchase' && inRange(r) && r.amount > 0);
-    const packs = new Map(), unknown = new Map();
-    let paid = 0, matchedRows = 0, matchedRobux = 0, unmatchedRobux = 0;
-
-    for (const r of rows) {
-      const m = priceForPack(r.amount);
-      if (m) {
-        paid += m.price; matchedRows++; matchedRobux += r.amount;
-        const e = packs.get(r.amount) || { amount: r.amount, count: 0, unit: m.price, how: m.how, last: null };
-        e.count++;
-        const t = r.created ? new Date(r.created).getTime() : null;
-        if (t && (e.last === null || t > e.last)) e.last = t;
-        packs.set(r.amount, e);
-      } else {
-        unmatchedRobux += r.amount;
-        const e = unknown.get(r.amount) || { amount: r.amount, count: 0 };
-        e.count++; unknown.set(r.amount, e);
-      }
-    }
-    return {
-      rows, paid, matchedRows, matchedRobux, unmatchedRobux,
-      robux: matchedRobux + unmatchedRobux,
-      packs: [...packs.values()].sort((a, b) => (b.unit * b.count) - (a.unit * a.count)),
-      unknown: [...unknown.values()].sort((a, b) => b.count - a.count)
-    };
-  }
-
-  const tracksCurrency = () => cfg.types.includes('CurrencyPurchase');
-
-  /* ================================================================== *
-   * Excluding games
-   *
-   * Catalog/avatar buys and the odd mis-grouped seller can drown out the
-   * numbers you actually care about, so any group can be parked. Excluded
-   * groups stay in storage — they're just left out of every total.
-   * ================================================================== */
-  const ignoredSet = () => new Set(store.get('ignored', []));
-  const isIgnored = key => ignoredSet().has(key);
-  function toggleIgnored(key) {
-    const s = ignoredSet();
-    if (s.has(key)) s.delete(key); else s.add(key);
-    store.set('ignored', [...s]);
-  }
-
-  // Spend records with excluded groups removed — the basis for every headline
-  // number, so the hero and the games list can never disagree.
-  function activeSpend() {
-    const ig = ignoredSet();
-    if (!ig.size) return spendRecords();
-    const out = [];
-    for (const g of buildGames(spendRecords(), true)) if (!ig.has(g.key)) out.push(...g.txs);
-    return out;
-  }
-
-  /* ================================================================== *
-   * Balance reconciliation
-   *
-   * Robux in minus Robux out should land on your current balance. When it
-   * doesn't, the gap is Robux from sources you aren't tracking — which is
-   * useful to say out loud rather than quietly mis-reporting a total.
-   * ================================================================== */
-  function pageBalance() {
-    try {
-      const el = document.getElementById('nav-robux-amount');
-      if (!el) return null;
-      const n = parseInt(String(el.textContent).replace(/[^\d]/g, ''), 10);
-      return isFinite(n) ? n : null;
-    } catch (e) { return null; }
-  }
-
-  function reconcile() {
-    const inRobux = incomeRecords().reduce((s, r) => s + r.amount, 0);
-    const outRobux = spendRecords().reduce((s, r) => s + r.amount, 0);
-    const expected = inRobux - outRobux;
-    const actual = pageBalance();
-    const missingTypes = TYPE_CATALOG.filter(t => !cfg.types.includes(t.id)).map(t => t.label);
-    return { inRobux, outRobux, expected, actual, gap: actual == null ? null : actual - expected, missingTypes };
-  }
-
-  /* ================================================================== *
-   * Records, streaks and milestones
-   * ================================================================== */
-  const dayKey = d => {
-    const x = new Date(d);
-    return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
-  };
-
-  function spendRecordsSorted() {
-    return activeSpend().filter(r => r.amount > 0 && r.created)
-      .sort((a, b) => new Date(a.created) - new Date(b.created));
-  }
-
-  function streaks() {
-    const days = [...new Set(spendRecordsSorted().map(r => dayKey(r.created)))].sort();
-    if (!days.length) return null;
-    let best = 1, cur = 1, bestEnd = days[0];
-    let gap = 0, gapFrom = null, gapTo = null;
-    for (let i = 1; i < days.length; i++) {
-      const prev = new Date(days[i - 1] + 'T00:00'), now = new Date(days[i] + 'T00:00');
-      const diff = Math.round((now - prev) / 864e5);
-      if (diff === 1) { cur++; if (cur > best) { best = cur; bestEnd = days[i]; } }
-      else {
-        cur = 1;
-        if (diff - 1 > gap) { gap = diff - 1; gapFrom = days[i - 1]; gapTo = days[i]; }
-      }
-    }
-    return { days: days.length, best, bestEnd, gap, gapFrom, gapTo, first: days[0], last: days[days.length - 1] };
-  }
-
-  // The single richest 7-day window, found by sliding over daily totals.
-  function bestWeek() {
-    const byDay = new Map();
-    for (const r of spendRecordsSorted()) byDay.set(dayKey(r.created), (byDay.get(dayKey(r.created)) || 0) + r.amount);
-    const days = [...byDay.keys()].sort();
-    if (!days.length) return null;
-    let best = null;
-    for (let i = 0; i < days.length; i++) {
-      const start = new Date(days[i] + 'T00:00');
-      let sum = 0;
-      for (let j = i; j < days.length; j++) {
-        const d = new Date(days[j] + 'T00:00');
-        if ((d - start) / 864e5 >= 7) break;
-        sum += byDay.get(days[j]);
-      }
-      if (!best || sum > best.total) best = { from: days[i], total: sum };
-    }
-    return best;
-  }
-
-  // Dates you crossed each round number, worked out from the running total.
-  function milestones() {
-    const recs = spendRecordsSorted();
-    if (!recs.length) return [];
-    const spendMarks = [1000, 10000, 50000, 100000, 250000, 500000, 1000000, 2000000, 5000000];
-    const countMarks = [1, 10, 100, 500, 1000, 2500, 5000, 10000];
-    const out = [];
-    let run = 0, n = 0, si = 0, ci = 0;
-    for (const r of recs) {
-      run += r.amount; n++;
-      while (si < spendMarks.length && run >= spendMarks[si]) {
-        out.push({ kind: 'spend', label: `${fmt(spendMarks[si])} R$ spent`, at: r.created, where: r.placeName || r.sellerName || '' });
-        si++;
-      }
-      while (ci < countMarks.length && n >= countMarks[ci]) {
-        out.push({ kind: 'count', label: countMarks[ci] === 1 ? 'First ever purchase' : `${fmt(countMarks[ci])} purchases`,
-                   at: r.created, where: r.placeName || r.sellerName || '' });
-        ci++;
-      }
-    }
-    return out.sort((a, b) => new Date(a.at) - new Date(b.at));
-  }
-
-  /* ================================================================== *
-   * Dormant spend — games you poured Robux into and then stopped
-   * ================================================================== */
-  function dormantGames(days) {
-    const cutoff = Date.now() - (days || 180) * 864e5;
-    return sortGames(buildGames(activeSpend()))
-      .filter(g => g.last && g.last < cutoff && g.total > 0)
-      .slice(0, 25);
-  }
-
-  /* ================================================================== *
-   * Cumulative spend, and period-over-period comparison
-   * ================================================================== */
-  function cumulative() {
-    const months = monthly(activeSpend());
-    let run = 0;
-    return months.map(m => { run += m.total; return { date: m.date, total: run, month: m.total }; });
-  }
-
-  function periodTotals(from, to) {
-    let total = 0, count = 0;
-    const games = new Set();
-    for (const r of activeSpend()) {
-      if (!r.created || !r.amount) continue;
-      const t = new Date(r.created).getTime();
-      if (t < from || t >= to) continue;
-      total += r.amount; count++;
-      if (r.universeId) games.add(String(r.universeId));
-    }
-    return { total, count, games: games.size };
-  }
-
-  function comparisons() {
-    const now = new Date();
-    const y = now.getFullYear(), m = now.getMonth();
-    const mk = (label, a, b) => ({ label, now: a, prev: b,
-      delta: b.total ? ((a.total - b.total) / b.total) * 100 : (a.total ? 100 : 0) });
-    return [
-      mk('This month vs last',
-        periodTotals(new Date(y, m, 1).getTime(), new Date(y, m + 1, 1).getTime()),
-        periodTotals(new Date(y, m - 1, 1).getTime(), new Date(y, m, 1).getTime())),
-      mk('This year vs last',
-        periodTotals(new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()),
-        periodTotals(new Date(y - 1, 0, 1).getTime(), new Date(y, 0, 1).getTime())),
-      mk('Last 30 days vs the 30 before',
-        periodTotals(Date.now() - 30 * 864e5, Date.now() + 864e5),
-        periodTotals(Date.now() - 60 * 864e5, Date.now() - 30 * 864e5))
-    ];
-  }
-
-  /* ================================================================== *
-   * Shareable summary card
-   * ================================================================== */
-  function shareCard() {
-    const W = 1200, H = 630;
-    const cv = document.createElement('canvas');
-    cv.width = W; cv.height = H;
-    const c = cv.getContext('2d');
-    if (!c) { setStatus('Your browser blocked the canvas needed for this.'); return; }
-
-    const g = c.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0, '#0d1b2a'); g.addColorStop(1, '#131018');
-    c.fillStyle = g; c.fillRect(0, 0, W, H);
-    c.fillStyle = 'rgba(0,162,255,.14)'; c.beginPath(); c.arc(W - 80, -60, 320, 0, 7); c.fill();
-    c.fillStyle = 'rgba(160,119,255,.12)'; c.beginPath(); c.arc(-40, H + 40, 260, 0, 7); c.fill();
-
-    const games = sortGames(buildGames(activeSpend()));
-    const total = games.reduce((s, x) => s + x.total, 0);
-    const count = games.reduce((s, x) => s + x.count, 0);
-    const mon = tracksCurrency() ? moneyStats() : null;
-    const F = (w, s, f) => { c.font = `${w} ${s}px "Builder Sans", "Segoe UI", system-ui, sans-serif`; c.fillStyle = f; };
-
-    F(600, 22, '#7f8b99'); c.fillText('WHERE MY ROBUX WENT', 64, 86);
-    F(800, 96, '#ffffff'); c.fillText(fmt(total) + ' R$', 64, 190);
-    F(600, 26, '#9aa3ae');
-    c.fillText(`${fmt(count)} purchases across ${fmt(games.length)} games` +
-      (mon && mon.paid ? ` · ${moneyStr(mon.paid)} of Robux bought` : ''), 64, 234);
-
-    let y = 316;
-    F(600, 20, '#7f8b99'); c.fillText('TOP GAMES', 64, y - 26);
-    for (const gm of games.slice(0, 5)) {
-      const pct = total ? gm.total / total : 0;
-      c.fillStyle = 'rgba(255,255,255,.07)'; c.fillRect(64, y - 22, W - 128, 40);
-      c.fillStyle = 'rgba(0,162,255,.32)'; c.fillRect(64, y - 22, (W - 128) * pct, 40);
-      F(600, 24, '#e8ecf1');
-      const name = gm.label.length > 42 ? gm.label.slice(0, 41) + '…' : gm.label;
-      c.fillText(name, 80, y + 6);
-      F(700, 24, '#6fe08a');
-      const amt = fmt(gm.total) + ' R$';
-      c.fillText(amt, W - 80 - c.measureText(amt).width, y + 6);
-      y += 54;
-    }
-
-    F(500, 20, '#5d6773');
-    c.fillText('Robux Tracker · unofficial, not affiliated with Roblox Corporation', 64, H - 44);
-
-    cv.toBlob(b => {
-      if (!b) { setStatus('Could not render the card.'); return; }
-      const url = URL.createObjectURL(b);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'my-robux-spending.png'; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-      setStatus('Summary card saved as my-robux-spending.png');
-    }, 'image/png');
-  }
-
-  /* ================================================================== *
-   * Every transaction type the Transactions page exposes
-   *
-   * The site's dropdown is a friendly rename of the API's transactionType
-   * values. Rather than trust a hardcoded map, we probe each candidate once
-   * and keep whatever actually answers — the same self-checking approach the
-   * rest of this script uses. Direction (money in vs out) is read from the
-   * sign Roblox puts on the amount, not guessed from the name.
-   * ================================================================== */
-  const CANDIDATE_TYPES = [
-    { id: 'Purchase', label: 'Purchases', hint: 'Game passes, dev products, catalog items' },
-    { id: 'CurrencyPurchase', label: 'Robux purchases', hint: 'Robux you bought with real money' },
-    { id: 'PremiumStipend', label: 'Robux stipends', hint: 'Your monthly Premium payout' },
-    { id: 'Sale', label: 'Sales of goods', hint: 'Robux others spent on your items' },
-    { id: 'TradeRobux', label: 'Earnings from trades', hint: 'Robux gained or lost trading' },
-    { id: 'GroupPayout', label: 'Community payouts', hint: 'Group payouts you received' },
-    { id: 'Commission', label: 'Commissions', hint: 'Affiliate commission entries' },
-    { id: 'AffiliateSale', label: 'Affiliate sales', hint: 'Referral earnings' },
-    { id: 'AdSpend', label: 'Sponsored ad spend', hint: 'Robux spent advertising' },
-    { id: 'EngagementPayout', label: 'Creator rewards', hint: 'Daily engagement-based payouts' },
-    { id: 'GroupEngagementPayout', label: 'Group creator rewards', hint: 'Engagement payouts to a group' },
-    { id: 'CSAdjustment', label: 'Roblox adjustments', hint: 'Corrections made by Roblox' },
-    { id: 'IndividualToGroup', label: 'Robux transfers out', hint: 'Robux you sent to a group' },
-    { id: 'GroupToIndividual', label: 'Robux transfers in', hint: 'Robux a group sent you' },
-    { id: 'PendingRobux', label: 'Pending Robux', hint: 'Sales still clearing' },
-    { id: 'PublishingAdvanceRebates', label: 'Publishing rebates', hint: 'Advance rebates' },
-    { id: 'AdsRevsharePayout', label: 'Ads revenue share', hint: 'Immersive ads revenue' },
-    { id: 'SubscriptionsRevshare', label: 'Subscription revenue', hint: 'Creator subscription earnings' }
-  ];
-
-  const discovered = () => store.get('typeProbe', null);
-
-  function knownTypes() {
-    const d = discovered();
-    if (!d) return CANDIDATE_TYPES.filter(t => ['Purchase', 'CurrencyPurchase'].includes(t.id));
-    return CANDIDATE_TYPES.filter(t => d.valid.includes(t.id));
-  }
-
-  function typeMeta(id) {
-    return CANDIDATE_TYPES.find(t => t.id === id) || { id, label: id, hint: '' };
-  }
-
-  // One cheap request per candidate. 400/422 means Roblox doesn't know the
-  // name; anything that parses as a data array counts as real.
-  async function discoverTypes() {
-    if (state.running) { setStatus('Finish the current scan first.'); return; }
-    state.running = true; state.stopped = false; state.startedAt = Date.now();
-    state.log = []; startClock(); setButtons();
-    const valid = [], withRows = [], dead = [];
-    try {
-      if (!state.me) state.me = await getAuthedUser();
-      let i = 0;
-      for (const t of CANDIDATE_TYPES) {
-        if (state.stopped) break;
-        i++;
-        setStatus(`Checking what Roblox will show us — ${t.label} (${i}/${CANDIDATE_TYPES.length})`);
-        const url = `https://economy.roblox.com/v2/users/${state.me.id}/transactions` +
-          `?transactionType=${encodeURIComponent(t.id)}&limit=10`;
-        let res, body = null;
-        try {
-          res = await fetch(url, { credentials: 'include' });
-          const txt = await res.text();
-          try { body = JSON.parse(txt); } catch (e) {}
-        } catch (e) { dead.push(t.id); logLine(`${t.id}: network error`); continue; }
-
-        if (res.status === 429) { await interruptibleSleep(6000, 'Rate limited'); i--; continue; }
-        const rows = body && Array.isArray(body.data) ? body.data : null;
-        if (res.ok && rows) {
-          valid.push(t.id);
-          if (rows.length) withRows.push(t.id);
-          logLine(`${t.id}: ok, ${rows.length} row(s) on the first page`);
-        } else {
-          dead.push(t.id);
-          logLine(`${t.id}: HTTP ${res.status} — not a type this account exposes`);
-        }
-        await interruptibleSleep(Math.max(MIN_DELAY_MS, cfg.delayMs), 'Pacing');
-      }
-      store.set('typeProbe', { valid, withRows, dead, at: Date.now() });
-      // anything that actually has rows becomes tracked
-      const merged = new Set(cfg.types.concat(withRows));
-      cfg.types = [...merged]; saveCfg();
-      setStatus(`Found ${withRows.length} transaction types with history (${valid.length} accepted, ${dead.length} unavailable).`);
-      renderTypeBar(); render();
-    } catch (e) {
-      setStatus('⚠ ' + (e instanceof StopSignal ? 'Stopped.' : e.message));
-    } finally {
-      state.running = false; stopClock(); setButtons();
-    }
-  }
-
-  /* ================================================================== *
-   * Ledger — every type, side by side
-   * ================================================================== */
-  function ledger() {
-    const map = new Map();
-    for (const r of state.records) {
-      if (!inRange(r)) continue;
-      const e = map.get(r.txType) || { id: r.txType, label: typeMeta(r.txType).label, inR: 0, outR: 0, count: 0, last: null };
-      if (dirOf(r) === 'out') e.outR += r.amount; else e.inR += r.amount;
-      e.count++;
-      const t = r.created ? new Date(r.created).getTime() : null;
-      if (t && (e.last === null || t > e.last)) e.last = t;
-      map.set(r.txType, e);
-    }
-    return [...map.values()].sort((a, b) => (b.inR + b.outR) - (a.inR + a.outR));
-  }
-
-  /* ================================================================== *
-   * Insights
-   * ================================================================== */
-  function biggestPurchases(n) {
-    return activeSpend().filter(r => r.amount > 0)
-      .sort((a, b) => b.amount - a.amount).slice(0, n || 50);
-  }
-
-  // Items you went back for. The interesting number isn't the price, it's
-  // how much the repeats added up to.
-  function repeatBuys() {
-    const map = new Map();
-    for (const r of activeSpend()) {
-      if (!r.amount) continue;
-      const where = r.placeName || r.sellerName || '';
-      const key = (r.itemName || r.itemType || 'item') + '|' + where;
-      const e = map.get(key) || { name: r.itemName || r.itemType || 'Item', where, count: 0, total: 0, last: null, unit: r.amount };
-      e.count++; e.total += r.amount;
-      const t = r.created ? new Date(r.created).getTime() : null;
-      if (t && (e.last === null || t > e.last)) e.last = t;
-      map.set(key, e);
-    }
-    return [...map.values()].filter(e => e.count >= 2)
-      .map(e => Object.assign(e, { repeatSpend: e.total - (e.total / e.count) }))
-      .sort((a, b) => b.total - a.total);
-  }
-
-  // Spending by weekday and by hour — shows when the impulse buying happens.
-  function habitStats() {
-    const dow = new Array(7).fill(0), dowCount = new Array(7).fill(0);
-    const hour = new Array(24).fill(0);
-    const byDay = new Map();
-    for (const r of activeSpend()) {
-      if (!r.amount || !r.created) continue;
-      const d = new Date(r.created);
-      dow[d.getDay()] += r.amount; dowCount[d.getDay()]++;
-      hour[d.getHours()] += r.amount;
-      const k = d.toISOString().slice(0, 10);
-      byDay.set(k, (byDay.get(k) || 0) + r.amount);
-    }
-    let peakDay = null;
-    for (const [k, v] of byDay) if (!peakDay || v > peakDay.total) peakDay = { date: k, total: v };
-    return { dow, dowCount, hour, peakDay, activeDays: byDay.size };
-  }
-
-  /* ================================================================== *
-   * Year in review
-   * ================================================================== */
-  function yearsCovered() {
-    const set = new Set();
-    for (const r of state.records) if (r.created) set.add(new Date(r.created).getFullYear());
-    return [...set].sort((a, b) => b - a);
-  }
-
-  function yearReview(year) {
-    const isIn = r => r.created && new Date(r.created).getFullYear() === year;
-    const ig = ignoredSet();
-    const keep = r => !ig.size || !ig.has(r.universeId ? 'u:' + r.universeId : 's:' + (r.sellerId || r.sellerName || 'unknown'));
-    const spend = state.records.filter(r => typeInfo(r.txType).kind === 'out' && isIn(r) && r.amount > 0 && keep(r));
-    const bought = state.records.filter(r => r.txType === 'CurrencyPurchase' && isIn(r) && r.amount > 0);
-
-    const total = spend.reduce((s, r) => s + r.amount, 0);
-    const games = sortGames(buildGames(spend)).slice(0, 5);
-
-    const items = new Map();
-    for (const r of spend) {
-      const k = r.itemName || r.itemType || 'Item';
-      const e = items.get(k) || { name: k, count: 0, total: 0 };
-      e.count++; e.total += r.amount; items.set(k, e);
-    }
-    const byCount = [...items.values()].sort((a, b) => b.count - a.count)[0] || null;
-    const bySpend = [...items.values()].sort((a, b) => b.total - a.total)[0] || null;
-
-    const days = new Map(), months = new Map();
-    for (const r of spend) {
-      const d = new Date(r.created);
-      const dk = d.toISOString().slice(0, 10);
-      days.set(dk, (days.get(dk) || 0) + r.amount);
-      const mk = d.getMonth();
-      months.set(mk, (months.get(mk) || 0) + r.amount);
-    }
-    let peakDay = null; for (const [k, v] of days) if (!peakDay || v > peakDay.total) peakDay = { date: k, total: v };
-    let peakMonth = null; for (const [k, v] of months) if (!peakMonth || v > peakMonth.total) peakMonth = { month: k, total: v };
-
-    // games seen for the first time this year
-    const before = new Set();
-    for (const r of state.records) {
-      if (!r.created || new Date(r.created).getFullYear() >= year) continue;
-      if (r.universeId) before.add(String(r.universeId));
-    }
-    const thisYear = new Set();
-    for (const r of spend) if (r.universeId) thisYear.add(String(r.universeId));
-    const newGames = [...thisYear].filter(u => !before.has(u)).length;
-
-    let paid = 0, unmatched = 0;
-    for (const r of bought) { const m = priceForPack(r.amount); if (m) paid += m.price; else unmatched += r.amount; }
-
-    return {
-      year, total, count: spend.length, games, byCount, bySpend,
-      peakDay, peakMonth, newGames, activeDays: days.size,
-      robuxBought: bought.reduce((s, r) => s + r.amount, 0), paid, unmatchedRobux: unmatched,
-      gameCount: thisYear.size
-    };
-  }
-
-  /* ================================================================== *
-   * Theme
-   * ================================================================== */
-  function siteTheme() {
-    try {
-      const b = document.body;
-      if (b && b.classList.contains('light-theme')) return 'light';
-      if (b && b.classList.contains('dark-theme')) return 'dark';
-      if (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) return 'light';
-    } catch (e) {}
-    return 'dark';
-  }
-  function effectiveTheme() { return cfg.theme === 'auto' ? siteTheme() : cfg.theme; }
-  function applyTheme() {
-    if (panel) { panel.setAttribute('data-theme', effectiveTheme()); panel.setAttribute('data-density', cfg.density || 'cozy'); }
-  }
-
-  /* ================================================================== *
    * Boot the UI once the DOM exists (we run at document-start)
    * ================================================================== */
   function ready(fn) {
@@ -1478,15 +926,314 @@
     wireEvents();
     watchForPrices();
 
-    if (state.records.length) state.records.sort((a, b) => new Date(b.created) - new Date(a.created));
     setButtons();
-    setStatus('Idle');
+    if (state.records.length) {
+      state.records.sort((a, b) => new Date(b.created) - new Date(a.created));
+      setStatus(`Loaded ${fmt(state.records.length)} cached records${state.lastScan ? ' from ' + dtstr(state.lastScan) : ''}.`);
+    } else {
+      setStatus('Idle');
+    }
   }
 
   /* ------------------------------------------------------------------ *
    * Styles — tuned to Roblox's own design language (Builder Sans, their
    * surface/stroke greys, 8/12/16px radii, monochrome line icons).
    * ------------------------------------------------------------------ */
+  function injectStyles() {
+    addStyle(`
+    #rst-overlay, #rst-panel, #rst-panel *{box-sizing:border-box;}
+
+    /* ---------- launchers ---------- */
+    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
+    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
+
+    /* still-scanning indicator, visible with the panel closed */
+    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
+      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
+      animation:rst-pulse 1.2s ease-in-out infinite;}
+    #rst-pagebtn{position:relative;}
+    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
+    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+    /* Roblox's own sprite sits on a text baseline slightly differently to ours */
+    .rst-rbxs{display:inline-block;vertical-align:-.15em;margin-right:2px;flex:none;}
+
+    #rst-pagebtn{display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
+      background:#00a2ff;color:#fff;border:none;border-radius:8px;padding:0 14px;height:36px;
+      font:600 14px/1 var(--rst-font);cursor:pointer;transition:background .12s;}
+    #rst-pagebtn:hover{background:#0092e6;}
+    #rst-pagebtn svg{width:18px;height:18px;}
+
+    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
+      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:44px;width:44px;
+      padding:0;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35);transition:width .18s ease,padding .18s ease;
+      overflow:hidden;user-select:none;gap:0;}
+    #rst-fab svg{width:22px;height:22px;flex:none;}
+    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:600 14px var(--rst-font);
+      transition:max-width .18s ease,opacity .15s ease;}
+    #rst-fab:hover{width:180px;padding:0 16px;gap:9px;}
+    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
+    #rst-fab.hide{display:none;}
+
+    /* ---------- shell ---------- */
+    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(0,0,0,.6);
+      display:none;align-items:center;justify-content:center;padding:20px;}
+    #rst-overlay.open{display:flex;}
+
+    #rst-panel{
+      --rst-font:"Builder Sans","BuilderSans","Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
+      --bg:#0f1114; --card:#1b1e23; --card2:#22262c; --line:rgba(255,255,255,.09);
+      --tx:#f2f4f7; --tx2:#9aa3ae; --acc:#00a2ff; --money:#00b06f; --warn:#f2a93b; --bad:#ff6b6b;
+      width:min(1140px,100%);height:min(820px,100%);display:flex;flex-direction:column;position:relative;
+      background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:16px;overflow:hidden;
+      font:14px/1.45 var(--rst-font);box-shadow:0 24px 64px rgba(0,0,0,.55);animation:rst-in .16s ease;}
+    #rst-panel[data-theme="light"]{--bg:#f5f6f7;--card:#fff;--card2:#eef0f2;--line:rgba(0,0,0,.1);
+      --tx:#17181c;--tx2:#5f6772;--money:#00854f;}
+    @keyframes rst-in{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+
+    /* ---------- top bar ---------- */
+    .rst-top{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);
+      background:var(--card);flex:none;}
+    .rst-brand{display:flex;align-items:center;gap:11px;min-width:0;}
+    .rst-logo{width:36px;height:36px;border-radius:10px;background:rgba(0,162,255,.14);color:var(--acc);
+      display:grid;place-items:center;flex:none;}
+    .rst-logo svg{width:21px;height:21px;}
+    .rst-title{font-size:16px;font-weight:700;letter-spacing:-.2px;line-height:1.2;}
+    .rst-sub{font-size:12px;color:var(--tx2);}
+    .rst-top .sp{flex:1;}
+
+    .rst-cta{height:38px;padding:0 18px;border:none;border-radius:8px;background:var(--acc);color:#fff;
+      font:600 14px var(--rst-font);cursor:pointer;transition:background .12s,opacity .12s;white-space:nowrap;}
+    .rst-cta:hover:not(:disabled){background:#0092e6;}
+    .rst-cta:disabled{opacity:.45;cursor:not-allowed;}
+    .rst-cta.sec{background:transparent;color:var(--tx);border:1px solid var(--line);}
+    .rst-cta.sec:hover:not(:disabled){background:var(--card2);}
+    .rst-ico{width:38px;height:38px;border-radius:8px;border:1px solid var(--line);background:transparent;
+      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;transition:background .12s,color .12s;}
+    .rst-ico:hover{background:var(--card2);color:var(--tx);}
+    .rst-ico svg{width:18px;height:18px;}
+
+    /* ---------- scan bar ---------- */
+    .rst-scan{display:none;align-items:center;gap:12px;padding:10px 18px;background:var(--card);
+      border-bottom:1px solid var(--line);position:relative;flex:none;}
+    .rst-scan.on{display:flex;}
+    .rst-spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(0,162,255,.25);
+      border-top-color:var(--acc);animation:rst-spin .7s linear infinite;flex:none;}
+    @keyframes rst-spin{to{transform:rotate(360deg)}}
+    .rst-scan .txt{flex:1;font-size:13px;color:var(--tx);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .rst-scan .clock{font:600 13px ui-monospace,Consolas,monospace;color:var(--tx2);flex:none;}
+    .rst-scan .mini{height:30px;padding:0 12px;border-radius:7px;border:1px solid var(--line);background:transparent;
+      color:var(--tx2);font:600 12px var(--rst-font);cursor:pointer;flex:none;}
+    .rst-scan .mini:hover{background:var(--card2);color:var(--tx);}
+    .rst-scan .bar{position:absolute;left:0;bottom:0;height:2px;width:100%;overflow:hidden;background:transparent;}
+    .rst-scan .bar i{display:block;height:100%;width:30%;background:var(--acc);animation:rst-slide 1.1s infinite ease-in-out;}
+    @keyframes rst-slide{0%{margin-left:-30%}100%{margin-left:100%}}
+
+    .rst-toast{display:none;align-items:center;gap:10px;padding:10px 18px;font-size:13px;flex:none;
+      border-bottom:1px solid var(--line);}
+    .rst-toast.on{display:flex;}
+    .rst-toast.warn{background:rgba(242,169,59,.1);color:var(--warn);}
+    .rst-toast.err{background:rgba(255,107,107,.1);color:var(--bad);}
+    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
+
+    /* ---------- hero ---------- */
+    .rst-hero{padding:18px;display:flex;gap:14px;align-items:stretch;flex-wrap:wrap;flex:none;}
+    .rst-total{background:linear-gradient(135deg,rgba(0,162,255,.16),rgba(0,176,111,.1));
+      border:1px solid var(--line);border-radius:14px;padding:16px 20px;min-width:250px;flex:1.2;}
+    .rst-total .k{font-size:12px;color:var(--tx2);font-weight:600;letter-spacing:.3px;text-transform:uppercase;}
+    .rst-total .v{display:flex;align-items:center;gap:8px;font-size:34px;font-weight:800;letter-spacing:-1px;
+      line-height:1.15;margin-top:4px;}
+    .rst-total .usd{font-size:13px;color:var(--tx2);font-weight:600;}
+    .rst-total .usd b{color:var(--tx);font-weight:700;}
+    .rst-split{margin-top:14px;}
+    .rst-splitkey{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--tx2);margin-top:7px;}
+    .rst-splitkey span{display:flex;align-items:center;gap:5px;white-space:nowrap;}
+    .rst-splitkey i{width:8px;height:8px;border-radius:2px;display:inline-block;flex:none;}
+    .rst-splitkey b{color:var(--tx);font-weight:700;}
+
+    .rst-mini-stats{flex:2;display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+      grid-auto-rows:1fr;gap:10px;align-content:start;}
+    .rst-ms{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 13px;
+      display:flex;flex-direction:column;justify-content:center;min-width:0;}
+    .rst-ms .k{font-size:11px;color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.4px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-ms .v{font-size:19px;font-weight:700;margin-top:3px;display:flex;align-items:baseline;gap:4px;
+      white-space:nowrap;line-height:1.2;}
+    .rst-ms .v small{font-size:12px;color:var(--tx2);font-weight:600;}
+    .rst-ms .s{font-size:11px;color:var(--tx2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+    .rst-rbx{display:inline-block;width:1em;height:1em;vertical-align:-.1em;flex:none;}
+    .rst-rbx svg{width:100%;height:100%;display:block;}
+
+    /* ---------- tabs / tools ---------- */
+    .rst-tabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);flex:none;}
+    .rst-tab{background:none;border:none;color:var(--tx2);padding:11px 14px;font:600 14px var(--rst-font);
+      cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
+    .rst-tab:hover{color:var(--tx);}
+    .rst-tab.on{color:var(--tx);border-bottom-color:var(--acc);}
+
+    .rst-tools{display:flex;gap:10px;align-items:center;padding:14px 18px 6px;flex:none;}
+    .rst-field{flex:1;position:relative;display:flex;align-items:center;}
+    .rst-field svg{position:absolute;left:12px;width:17px;height:17px;color:var(--tx2);pointer-events:none;}
+    .rst-search{width:100%;height:38px;background:var(--card);border:1px solid var(--line);border-radius:8px;
+      color:var(--tx);padding:0 12px 0 36px;font:14px var(--rst-font);}
+    .rst-search:focus{outline:none;border-color:var(--acc);}
+    .rst-select{height:38px;background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--tx);
+      padding:0 10px;font:600 13px var(--rst-font);cursor:pointer;}
+
+    .rst-body{flex:1;overflow:auto;padding:10px 18px 22px;}
+    .rst-body::-webkit-scrollbar{width:10px}
+    .rst-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;border:3px solid var(--bg)}
+
+    /* ---------- game rows ---------- */
+    .rst-summary{font-size:13px;color:var(--tx2);margin:4px 0 12px;}
+    .rst-game{display:flex;align-items:center;gap:14px;padding:11px 12px;border-radius:12px;margin-bottom:8px;
+      cursor:pointer;background:var(--card);border:1px solid transparent;transition:background .12s,border-color .12s;}
+    .rst-game:hover{border-color:var(--line);background:var(--card2);}
+    .rst-game .rank{width:20px;text-align:center;font-weight:700;color:var(--tx2);font-size:13px;flex:none;}
+    .rst-game img{width:52px;height:52px;border-radius:10px;background:var(--card2);flex:none;object-fit:cover;}
+    .rst-game .nm{flex:1;min-width:0;}
+    .rst-game .nm b{display:block;font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-game .meta{font-size:12px;color:var(--tx2);margin-top:1px;}
+    .rst-game .amt{text-align:right;flex:none;}
+    .rst-game .amt b{font-size:17px;font-weight:700;color:var(--money);display:flex;align-items:center;gap:5px;justify-content:flex-end;}
+    .rst-game .amt small{display:block;font-size:11px;color:var(--tx2);margin-top:1px;}
+    .rst-meter{height:3px;border-radius:2px;background:var(--card2);margin-top:7px;overflow:hidden;}
+    .rst-meter i{display:block;height:100%;background:var(--acc);border-radius:2px;}
+
+    .rst-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}
+    .rst-chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--card2);
+      color:var(--tx2);border:1px solid var(--line);}
+    .rst-chip.pass{color:#66c6ff;} .rst-chip.prod{color:#b79bff;} .rst-chip.serv{color:#ffab6b;}
+    .rst-chip.inf{color:var(--warn);}
+
+    /* ---------- detail ---------- */
+    .rst-back{display:inline-flex;align-items:center;gap:6px;background:none;border:none;color:var(--tx2);
+      font:600 13px var(--rst-font);cursor:pointer;padding:6px 0;margin-bottom:8px;}
+    .rst-back:hover{color:var(--tx);}
+    .rst-dhead{display:flex;gap:16px;align-items:center;padding:16px;background:var(--card);
+      border:1px solid var(--line);border-radius:14px;margin-bottom:14px;flex-wrap:wrap;}
+    .rst-dhead img{width:84px;height:84px;border-radius:14px;background:var(--card2);flex:none;object-fit:cover;}
+    .rst-dhead h2{margin:0 0 3px;font-size:21px;font-weight:700;letter-spacing:-.3px;}
+    .rst-dhead .meta{font-size:12.5px;color:var(--tx2);line-height:1.7;}
+    .rst-dhead .big{margin-left:auto;text-align:right;}
+    .rst-dhead .big b{display:flex;align-items:center;gap:7px;font-size:30px;font-weight:800;color:var(--money);letter-spacing:-1px;}
+    .rst-dhead .big small{font-size:12px;color:var(--tx2);font-weight:600;}
+
+    .rst-catbar{display:flex;height:8px;border-radius:5px;overflow:hidden;margin-bottom:8px;background:var(--card2);}
+    .rst-catkey{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--tx2);margin-bottom:14px;}
+    .rst-catkey span{display:flex;align-items:center;gap:6px;}
+    .rst-catkey i{width:9px;height:9px;border-radius:3px;display:inline-block;}
+
+    .rst-secttl{font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--tx2);
+      margin:18px 0 8px;display:flex;align-items:center;gap:8px;}
+    .rst-secttl b{color:var(--tx);}
+    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--line);}
+
+    .rst-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;margin-bottom:6px;
+      background:var(--card);cursor:pointer;border:1px solid transparent;}
+    .rst-item:hover{border-color:var(--line);background:var(--card2);}
+    .rst-item .x{font-weight:700;font-size:13px;color:var(--acc);background:rgba(0,162,255,.12);border-radius:7px;
+      padding:4px 9px;flex:none;min-width:44px;text-align:center;}
+    .rst-item .nm{flex:1;min-width:0;}
+    .rst-item .nm b{display:block;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .rst-item .nm small{color:var(--tx2);font-size:12px;}
+    .rst-item .tot{font-weight:700;color:var(--money);white-space:nowrap;text-align:right;display:flex;
+      align-items:center;gap:5px;}
+    .rst-item .tot small{color:var(--tx2);font-weight:600;font-size:11px;}
+    .rst-txs{margin:-2px 0 10px 26px;border-left:2px solid var(--line);padding-left:14px;}
+    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12.5px;color:var(--tx2);}
+    .rst-tx b{color:var(--tx);font-weight:600;}
+
+    /* ---------- chart / tables ---------- */
+    .rst-chart{display:flex;align-items:flex-end;gap:4px;height:200px;padding:14px;background:var(--card);
+      border:1px solid var(--line);border-radius:12px;overflow-x:auto;}
+    .rst-chart .bar{flex:1;min-width:10px;background:var(--acc);border-radius:4px 4px 0 0;opacity:.85;}
+    .rst-chart .bar:hover{opacity:1;}
+    .rst-chart .bar.zero{background:var(--card2);}
+    .rst-axis{display:flex;justify-content:space-between;font-size:11.5px;color:var(--tx2);padding:8px 4px 0;}
+
+    .rst-table{width:100%;border-collapse:collapse;font-size:13.5px;}
+    .rst-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--tx2);
+      padding:8px 10px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);font-weight:700;}
+    .rst-table td{padding:9px 10px;border-bottom:1px solid var(--line);}
+    .rst-table tr:hover td{background:var(--card);}
+    .rst-table .r{text-align:right;white-space:nowrap;}
+    .rst-table .g{color:var(--money);font-weight:700;}
+
+    /* ---------- empty / onboarding ---------- */
+    .rst-empty{text-align:center;color:var(--tx2);padding:40px 20px;}
+    .rst-empty .ico{width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:rgba(0,162,255,.12);
+      color:var(--acc);display:grid;place-items:center;}
+    .rst-empty .ico svg{width:30px;height:30px;}
+    .rst-empty h3{margin:0 0 6px;font-size:19px;font-weight:700;color:var(--tx);}
+    .rst-empty p{margin:0 auto 18px;max-width:440px;font-size:13.5px;line-height:1.65;}
+    .rst-steps{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:20px;}
+    .rst-step{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;width:190px;text-align:left;}
+    .rst-step .n{width:22px;height:22px;border-radius:50%;background:var(--acc);color:#fff;font:700 12px var(--rst-font);
+      display:grid;place-items:center;margin-bottom:8px;}
+    .rst-step b{display:block;font-size:13.5px;color:var(--tx);margin-bottom:2px;}
+    .rst-step span{font-size:12px;line-height:1.55;}
+
+    .rst-note{font-size:12px;color:var(--tx2);margin-top:12px;line-height:1.6;}
+    a.rst-link{color:var(--acc);text-decoration:none;}
+    a.rst-link:hover{text-decoration:underline;}
+
+    /* ---------- menu + settings sheet ---------- */
+    .rst-menu{position:absolute;top:60px;right:18px;z-index:20;min-width:210px;background:var(--card);
+      border:1px solid var(--line);border-radius:12px;padding:6px;display:none;box-shadow:0 12px 32px rgba(0,0,0,.45);}
+    .rst-menu.on{display:block;}
+    .rst-menu button{display:flex;align-items:center;gap:10px;width:100%;background:none;border:none;color:var(--tx);
+      font:500 13.5px var(--rst-font);padding:9px 10px;border-radius:8px;cursor:pointer;text-align:left;}
+    .rst-menu button:hover{background:var(--card2);}
+    .rst-menu button.danger{color:var(--bad);}
+    .rst-menu hr{border:none;border-top:1px solid var(--line);margin:5px 2px;}
+    .rst-menu svg{width:16px;height:16px;opacity:.8;flex:none;}
+
+    .rst-sheet{position:absolute;inset:0;z-index:30;background:var(--bg);display:none;flex-direction:column;}
+    .rst-sheet.on{display:flex;}
+    .rst-sheet .body{flex:1;overflow:auto;padding:18px;}
+    .rst-set{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px;}
+    .rst-set h4{margin:0 0 3px;font-size:14px;font-weight:700;}
+    .rst-set p{margin:0 0 12px;font-size:12.5px;color:var(--tx2);line-height:1.6;}
+    .rst-set .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    .rst-flabel{font-size:13px;color:var(--tx2);}
+    .rst-num{width:88px;height:34px;background:var(--card2);border:1px solid var(--line);color:var(--tx);
+      border-radius:8px;padding:0 10px;font:600 13px var(--rst-font);}
+    .rst-switch{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--tx);cursor:pointer;
+      user-select:none;padding:7px 0;}
+    .rst-switch input{appearance:none;width:38px;height:22px;border-radius:999px;background:var(--card2);
+      border:1px solid var(--line);position:relative;cursor:pointer;transition:background .15s;flex:none;margin:0;}
+    .rst-switch input:checked{background:var(--acc);border-color:var(--acc);}
+    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+      background:#fff;transition:transform .15s;}
+    .rst-switch input:checked:after{transform:translateX(16px);}
+    .rst-switch .sub{font-size:12px;color:var(--tx2);display:block;}
+
+    .rst-types{display:flex;gap:7px;flex-wrap:wrap;}
+    .rst-type{font:600 12.5px var(--rst-font);padding:7px 13px;border-radius:8px;border:1px solid var(--line);
+      background:var(--card2);color:var(--tx2);cursor:pointer;user-select:none;transition:all .12s;}
+    .rst-type:hover{color:var(--tx);}
+    .rst-type.on{background:rgba(0,162,255,.15);border-color:var(--acc);color:var(--tx);}
+    .rst-type.in.on{background:rgba(0,176,111,.15);border-color:var(--money);}
+
+    .rst-log{margin:0;padding:12px;background:rgba(0,0,0,.45);color:var(--tx2);border-radius:10px;max-height:220px;
+      overflow:auto;font:11px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
+
+    /* ---------- troubleshoot modal ---------- */
+    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(0,0,0,.7);display:none;
+      align-items:center;justify-content:center;padding:20px;}
+    #rst-diag.open{display:flex;}
+    #rst-diag .box{width:min(900px,100%);height:min(640px,100%);background:#0f1114;border:1px solid rgba(255,255,255,.09);
+      border-radius:16px;display:flex;flex-direction:column;overflow:hidden;color:#f2f4f7;
+      --rst-font:"Builder Sans","BuilderSans","Source Sans Pro",Helvetica,Arial,sans-serif;
+      --bg:#0f1114;--card:#1b1e23;--card2:#22262c;--line:rgba(255,255,255,.09);--tx:#f2f4f7;--tx2:#9aa3ae;--acc:#00a2ff;
+      font:14px var(--rst-font);}
+    #rst-diag textarea{flex:1;background:#000;color:#c8ced6;border:none;padding:14px;resize:none;
+      font:11.5px/1.6 ui-monospace,Consolas,monospace;}
+    #rst-diag textarea:focus{outline:none;}
+    `);
+  }
 
   /* ------------------------------------------------------------------ *
    * Icons — monochrome line glyphs at 24px on a 24px grid, drawn with
@@ -1497,9 +1244,7 @@
 
   const ICONS = {
     // a spend-breakdown pie: reads as "where your Robux went"
-    // a donut with one segment filled — matches the app icon, and reads as a
-    // breakdown rather than the clock the old spoked version looked like
-    logo: SVG('<circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.6A8.4 8.4 0 0 1 20.4 12h-5a3.5 3.5 0 0 0-3.4-3.4Z" fill="currentColor" stroke="none"/>'),
+    logo: SVG('<circle cx="12" cy="12" r="8.6"/><path d="M12 12V3.4"/><path d="M12 12l7.4 4.3"/>'),
     close: SVG('<path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6"/>'),
     gear: SVG('<circle cx="12" cy="12" r="3.1"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4Z"/>'),
     dots: SVG('<circle cx="12" cy="5.5" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor" stroke="none"/>'),
@@ -1510,15 +1255,7 @@
     trash: SVG('<path d="M4.5 7h15"/><path d="M9.5 7V5.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7"/><path d="M6.5 7l.8 12a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9l.8-12"/>'),
     wrench: SVG('<path d="M14.8 6.2a4.5 4.5 0 0 0 5.9 5.9l-8.4 8.4a2.1 2.1 0 0 1-3-3l8.4-8.4"/><path d="M14.8 6.2 17.9 3"/>'),
     back: SVG('<path d="M15 5.5 8.5 12l6.5 6.5"/>'),
-    pie: SVG('<circle cx="12" cy="12" r="8.4"/><circle cx="12" cy="12" r="3.5"/><path d="M12 3.6A8.4 8.4 0 0 1 20.4 12h-5a3.5 3.5 0 0 0-3.4-3.4Z" fill="currentColor" stroke="none"/>'),
-    grid: SVG('<rect x="3.6" y="3.6" width="7" height="7" rx="1.6"/><rect x="13.4" y="3.6" width="7" height="7" rx="1.6"/><rect x="3.6" y="13.4" width="7" height="7" rx="1.6"/><rect x="13.4" y="13.4" width="7" height="7" rx="1.6"/>'),
-    coin: SVG('<ellipse cx="12" cy="6.6" rx="7.4" ry="3"/><path d="M4.6 6.6v10.8c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3V6.6"/><path d="M4.6 12c0 1.7 3.3 3 7.4 3s7.4-1.3 7.4-3"/>'),
-    tag: SVG('<path d="M3.8 11.3V4.6a.8.8 0 0 1 .8-.8h6.7c.2 0 .4.1.6.2l8 8a.8.8 0 0 1 0 1.2l-6.5 6.5a.8.8 0 0 1-1.2 0l-8-8a.8.8 0 0 1-.4-.4Z"/><circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none"/>'),
-    people: SVG('<circle cx="9" cy="8" r="3.2"/><path d="M3.4 19.4a5.8 5.8 0 0 1 11.2 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 5.7"/><path d="M17.6 14.4a5.8 5.8 0 0 1 3 5"/>'),
-    chart: SVG('<path d="M4 19.4V9.6"/><path d="M9.6 19.4V4.6"/><path d="M15.2 19.4v-7"/><path d="M20.4 19.4V7.4"/>'),
-    trophy: SVG('<path d="M7.4 4.2h9.2v4.4a4.6 4.6 0 1 1-9.2 0Z"/><path d="M7.4 5.8H4.8v1.4a3 3 0 0 0 2.6 3"/><path d="M16.6 5.8h2.6v1.4a3 3 0 0 1-2.6 3"/><path d="M12 13.2v3.4"/><path d="M8.6 19.8h6.8"/>'),
-    star: SVG('<path d="m12 3.6 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.8l5.9-.8Z"/>'),
-    list: SVG('<path d="M8.4 6.4h11.2"/><path d="M8.4 12h11.2"/><path d="M8.4 17.6h11.2"/><circle cx="4.6" cy="6.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.6" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.6" cy="17.6" r="1.1" fill="currentColor" stroke="none"/>'),
+    pie: SVG('<circle cx="12" cy="12" r="8.6"/><path d="M12 12V3.4"/><path d="M12 12l7.4 4.3"/>'),
     robux: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.05 1.1 13.4 3.6 10.9 12.95 1.55 10.45 4.05 1.1Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M6.6 5.05 10 5.96 9.1 9.36 5.7 8.45 6.6 5.05Z" fill="currentColor"/></svg>`
   };
 
@@ -1547,7 +1284,7 @@
 
   // size: 16 | 28 — matches the sizes Roblox itself defines
   function robuxGlyph(size) {
-    if (effectiveTheme() === 'dark' && spriteAvailable()) {
+    if (cfg.theme === 'dark' && spriteAvailable()) {
       return `<span class="icon-robux-${size || 16}x${size || 16} rst-rbxs"></span>`;
     }
     return `<span class="rst-rbx">${ICONS.robux}</span>`;
@@ -1652,31 +1389,255 @@
   /* ------------------------------------------------------------------ *
    * Panel markup
    * ------------------------------------------------------------------ */
+  function buildPanel() {
+    overlay = document.createElement('div');
+    overlay.id = 'rst-overlay';
+    overlay.innerHTML = `
+      <div id="rst-panel" data-theme="${cfg.theme}">
 
-  function renderExcluded() {
-    const box = document.getElementById('rst-excluded');
-    if (!box) return;
-    const keys = [...ignoredSet()];
-    const set = document.getElementById('rst-excluded-set');
-    if (set) set.style.display = keys.length ? 'block' : 'none';
-    if (!keys.length) { box.innerHTML = ''; return; }
-    const byKey = new Map(buildGames(spendRecords(), true).map(g => [g.key, g]));
-    box.innerHTML = keys.map(k => {
-      const g = byKey.get(k);
-      return `<div class="rst-exrow">
-        <span>${escapeHtml(g ? g.label : k)}${g ? ` <small>${fmt(g.total)} R$</small>` : ''}</span>
-        <button class="rst-btn" data-act="unignore" data-key="${escapeHtml(k)}"
-          style="height:30px;padding:0 11px;font-size:12px">Put back</button>
+        <header class="rst-top">
+          <div class="rst-brand">
+            <span class="rst-logo">${ICONS.logo}</span>
+            <div>
+              <div class="rst-title">Robux Tracker</div>
+              <div class="rst-sub" id="rst-sub">—</div>
+            </div>
+          </div>
+          <div class="sp"></div>
+          <button class="rst-cta" data-act="primary" id="rst-primary">Scan purchases</button>
+          <button class="rst-ico" data-act="menu" title="More">${ICONS.dots}</button>
+          <button class="rst-ico" data-act="settings" title="Settings">${ICONS.gear}</button>
+          <button class="rst-ico" id="rst-close" title="Close (Esc)">${ICONS.close}</button>
+        </header>
+
+        <div class="rst-scan" id="rst-scan">
+          <span class="rst-spin"></span>
+          <span class="txt" id="rst-status">Idle</span>
+          <span class="clock" id="rst-elapsed"></span>
+          <button class="mini" data-act="pause">Pause</button>
+          <button class="mini" data-act="stop">Stop</button>
+          <span class="bar"><i></i></span>
+        </div>
+
+        <div class="rst-toast" id="rst-toast"><span id="rst-toast-text"></span><span class="x" data-act="dismiss">✕</span></div>
+
+        <div class="rst-hero" id="rst-hero"></div>
+
+        <nav class="rst-tabs">
+          <button class="rst-tab on" data-tab="games">Games</button>
+          <button class="rst-tab" data-tab="items">Items</button>
+          <button class="rst-tab" data-tab="timeline">Timeline</button>
+          <button class="rst-tab" data-tab="sellers">Creators</button>
+        </nav>
+
+        <div class="rst-tools">
+          <label class="rst-field">${ICONS.search}
+            <input class="rst-search" id="rst-search" placeholder="Search a game, item or creator…">
+          </label>
+          <select class="rst-select" id="rst-sort">
+            <option value="total">Most spent</option>
+            <option value="count">Most purchases</option>
+            <option value="recent">Most recent</option>
+            <option value="name">Name A–Z</option>
+          </select>
+          <select class="rst-select" id="rst-range">
+            <option value="all">All time</option>
+            <option value="ytd">This year</option>
+            <option value="365">Last 12 months</option>
+            <option value="90">Last 90 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+        </div>
+
+        <div class="rst-body" id="rst-body"></div>
+
+        <div class="rst-menu" id="rst-menu">
+          <button data-act="update">${ICONS.refresh} Check for new purchases</button>
+          <button data-act="scan">${ICONS.refresh} Rescan everything</button>
+          <button data-act="resume" id="rst-resume-btn">${ICONS.refresh} Resume interrupted scan</button>
+          <hr>
+          <button data-act="csv">${ICONS.down} Export CSV</button>
+          <button data-act="json">${ICONS.down} Export JSON</button>
+          <button data-act="copy">${ICONS.copy} Copy summary</button>
+          <hr>
+          <button data-act="diag">${ICONS.wrench} Troubleshoot</button>
+          <button data-act="clear" class="danger">${ICONS.trash} Delete local data</button>
+        </div>
+
+        <section class="rst-sheet" id="rst-sheet">
+          <header class="rst-top">
+            <button class="rst-ico" data-act="closesheet" title="Back">${ICONS.back}</button>
+            <div class="rst-brand"><div><div class="rst-title">Settings</div>
+              <div class="rst-sub">Everything is stored locally in your browser</div></div></div>
+          </header>
+          <div class="body">
+            <div class="rst-set">
+              <h4>What to track</h4>
+              <p>“Purchases” is what you spent inside games. The green ones are Robux coming in — turn them on to compare in against out.</p>
+              <div class="rst-types" id="rst-typebar"></div>
+            </div>
+
+            <div class="rst-set">
+              <h4>Display</h4>
+              <label class="rst-switch"><input type="checkbox" id="rst-usd" ${cfg.showUsd ? 'checked' : ''}>
+                <span>Show what it would cost in dollars<span class="sub" id="rst-usd-note"></span></span></label>
+              <label class="rst-switch"><input type="checkbox" id="rst-premium" ${cfg.premium ? 'checked' : ''}>
+                <span>I have Roblox Premium<span class="sub">Premium gives more Robux per pack, so the money figures change</span></span></label>
+
+              <div class="row" style="margin-top:12px">
+                <span class="rst-flabel">Currency</span>
+                <select class="rst-select" id="rst-curmode">
+                  <option value="auto">Detected from my Buy Robux page</option>
+                  <option value="usd">US dollars</option>
+                  <option value="custom">Something else…</option>
+                </select>
+              </div>
+              <div class="row" id="rst-custom-row" style="margin-top:8px">
+                <span class="rst-flabel">Show as</span>
+                <select class="rst-select" id="rst-cursym">
+                  ${['$', '€', '£', 'R$', 'C$', 'A$', '¥', '₹', '₽', '₺', 'kr', 'zł', 'R', '₩', '₪', 'CHF'].map(s =>
+                    `<option value="${s}" ${cfg.curSymbol === s ? 'selected' : ''}>${s}</option>`).join('')}
+                </select>
+                <span class="rst-flabel">and 1,000 R$ costs</span>
+                <input class="rst-num" id="rst-curper" type="number" min="0.01" step="0.01" value="${cfg.curPer1000}">
+              </div>
+
+              <div class="row" style="margin-top:10px">
+                <span class="rst-flabel">Price everything using</span>
+                <select class="rst-select" id="rst-refpack"></select>
+              </div>
+              <p style="margin:8px 0 0" id="rst-rate-note"></p>
+
+              <div class="row" style="margin-top:10px">
+                <a class="rst-cta sec" style="text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;line-height:38px"
+                   href="https://www.roblox.com/upgrades/robux" target="_blank" rel="noreferrer">Detect my local prices</a>
+              </div>
+              <label class="rst-switch"><input type="checkbox" id="rst-merge" ${cfg.smartMerge ? 'checked' : ''}>
+                <span>Group loose purchases by creator<span class="sub">Attaches purchases with no game info to that creator's game when there's only one</span></span></label>
+              <label class="rst-switch"><input type="checkbox" id="rst-theme-sw" ${cfg.theme === 'light' ? 'checked' : ''}>
+                <span>Light theme</span></label>
+            </div>
+
+            <div class="rst-set">
+              <h4>Scan speed</h4>
+              <p id="rst-speed-note"></p>
+              <label class="rst-switch"><input type="checkbox" id="rst-turbo" ${cfg.turbo ? 'checked' : ''}>
+                <span>Faster scanning<span class="sub">Reads ${MAX_LANES} pages at a time instead of one. Off by default — the steady pace is
+                gentler on Roblox and a first scan only happens once.</span></span></label>
+              <div class="row" style="margin-top:8px">
+                <span class="rst-flabel">Pause between requests</span>
+                <input class="rst-num" id="rst-delay" type="number" min="${MIN_DELAY_MS}" step="50" value="${cfg.delayMs}">
+                <span class="rst-flabel">ms (minimum ${MIN_DELAY_MS})</span>
+              </div>
+            </div>
+
+            <div class="rst-set">
+              <h4>Scan log</h4>
+              <p>The last scan, page by page. Useful only if something looks wrong.</p>
+              <pre class="rst-log" id="rst-log">Nothing scanned yet.</pre>
+            </div>
+          </div>
+        </section>
       </div>`;
-    }).join('');
+    document.body.appendChild(overlay);
+
+    const diag = document.createElement('div');
+    diag.id = 'rst-diag';
+    diag.innerHTML = `
+      <div class="box">
+        <div class="rst-top">
+          <div class="rst-brand"><div><div class="rst-title">Troubleshoot</div>
+            <div class="rst-sub">Send this to whoever is helping you</div></div></div>
+          <div class="sp"></div>
+          <button class="rst-cta sec" id="rst-diag-copy">Copy</button>
+          <button class="rst-ico" id="rst-diag-close">${ICONS.close}</button>
+        </div>
+        <textarea id="rst-diag-text" readonly></textarea>
+      </div>`;
+    document.body.appendChild(diag);
+
+    panel = overlay.querySelector('#rst-panel');
+    $ = sel => overlay.querySelector(sel) || diag.querySelector(sel);
+
+    renderTypeBar();
+    $('#rst-sort').value = ui.sort;
+    $('#rst-range').value = ui.range;
   }
 
+  function renderTypeBar() {
+    const bar = $('#rst-typebar');
+    if (!bar) return;
+    bar.innerHTML = TYPE_CATALOG.map(t =>
+      `<span class="rst-type ${t.kind === 'in' ? 'in' : ''} ${cfg.types.includes(t.id) ? 'on' : ''}"
+        data-type="${t.id}" title="${escapeHtml(t.hint)}">${escapeHtml(t.label)}</span>`).join('');
+  }
 
   /* ------------------------------------------------------------------ *
    * Status / chrome
    * ------------------------------------------------------------------ */
+  function setStatus(t) { const el = document.getElementById('rst-status'); if (el) el.textContent = t; }
 
+  function toast(msg, kind) {
+    const t = document.getElementById('rst-toast');
+    if (!t) return;
+    document.getElementById('rst-toast-text').textContent = msg;
+    t.className = 'rst-toast on ' + (kind || 'warn');
+  }
+  function clearToast() {
+    const t = document.getElementById('rst-toast');
+    if (t) t.className = 'rst-toast';
+  }
 
+  function setButtons() {
+    if (!overlay) return;
+    const primary = $('#rst-primary');
+    if (primary) {
+      primary.textContent = state.running ? 'Scanning…'
+        : state.records.length ? 'Check for new' : 'Scan purchases';
+      primary.disabled = state.running;
+    }
+    const scan = document.getElementById('rst-scan');
+    if (scan) scan.classList.toggle('on', state.running);
+    if (fab) fab.classList.toggle('busy', state.running);
+    // the launchers show progress too, so a scan is visible with the panel shut
+    ['rst-sidebtn', 'rst-pagebtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.classList.toggle('rst-scanning', state.running);
+        el.title = state.running ? 'Robux Tracker — scanning…' : 'Robux Tracker';
+      }
+    });
+
+    const p = $('[data-act="pause"]');
+    if (p) p.textContent = state.paused ? 'Continue' : 'Pause';
+
+    const res = $('#rst-resume-btn');
+    if (res) res.style.display = store.get('progress', null) ? 'flex' : 'none';
+
+    const sub = $('#rst-sub');
+    if (sub) {
+      sub.textContent = state.lastScan
+        ? `${fmt(state.records.length)} purchases · updated ${ago(state.lastScan)}`
+        : 'Nothing scanned yet';
+    }
+    const elp = document.getElementById('rst-elapsed');
+    if (elp && !state.running) elp.textContent = '';
+    const log = document.getElementById('rst-log');
+    if (log && state.log.length) log.textContent = state.log.join('\n');
+    const un = document.getElementById('rst-usd-note');
+    if (un) {
+      const src = priceSource();
+      un.textContent = src
+        ? `Your own store prices (${src.tiers.length} packs in ${src.symbol}) were read from the Buy Robux page ${ago(src.detectedAt)}.`
+        : 'Using built-in US prices — open the Buy Robux page once and your region and currency get picked up automatically.';
+    }
+    const note = document.getElementById('rst-speed-note');
+    if (note) {
+      note.textContent = state.lastPace
+        ? `Your last scan ran at about ${state.lastPace} pages per minute.`
+        : 'Roblox limits how fast this data can be pulled, so a first full scan takes a few minutes. After that, “Check for new” only reads what changed.';
+    }
+  }
 
   /* ------------------------------------------------------------------ *
    * Hero summary
@@ -1715,10 +1676,79 @@
   const rangeLabel = () => RANGE_LABELS[ui.range] || 'all time';
 
   // sub goes on its own line — inlining it made narrow cards wrap mid-phrase
+  const msCard = (k, v, sub) =>
+    `<div class="rst-ms"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
+  const monthYear = t => new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 
+  function renderStats() {
+    if (!overlay) return;
+    const hero = $('#rst-hero');
+    if (!hero) return;
 
+    const spend = spendRecords();
+    const income = incomeRecords();
+    const total = spend.reduce((s, r) => s + (r.amount || 0), 0);
+    const inTotal = income.reduce((s, r) => s + (r.amount || 0), 0);
+    const games = buildGames(spend);
+    const attributed = games.filter(g => g.attributed);
+    const { min, max } = dateRange(spend);
+    const days = (min && max) ? Math.max(1, Math.round((max - min) / 864e5)) : 0;
+    const biggest = spend.reduce((m, r) => Math.max(m, r.amount || 0), 0);
 
+    if (!state.records.length) { hero.innerHTML = ''; return; }
+
+    const cards = [
+      msCard('Purchases', fmt(spend.length)),
+      msCard('Games', fmt(attributed.length)),
+      msCard('Average', rbx(spend.length ? total / spend.length : 0), 'per purchase'),
+      msCard('Biggest', rbx(biggest), 'single purchase'),
+      msCard('Per month', rbx(days ? total / (days / 30.44) : 0), 'on average'),
+      msCard('Tracked', `${fmt(days)} <small>days</small>`, min ? 'since ' + monthYear(min) : '')
+    ];
+    if (income.length) cards.unshift(msCard('Robux in', rbx(inTotal), 'bought or earned'));
+
+    // category split, biggest first — fills out the total card and is genuinely useful
+    const catTotals = new Map();
+    for (const r of spend) {
+      if (!r.amount) continue;
+      const c = categoryOf(r.itemType);
+      catTotals.set(c, (catTotals.get(c) || 0) + r.amount);
+    }
+    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
+    const split = total > 0 && cats.length ? `
+      <div class="rst-split">
+        <div class="rst-catbar">${cats.map(([c, v]) =>
+          `<i style="width:${(v / total) * 100}%;background:${catColor(c)}" title="${escapeHtml(c)}: ${fmt(v)} R$"></i>`).join('')}</div>
+        <div class="rst-splitkey">${cats.slice(0, 3).map(([c, v]) =>
+          `<span><i style="background:${catColor(c)}"></i>${escapeHtml(c)} <b>${((v / total) * 100).toFixed(0)}%</b></span>`).join('')}</div>
+      </div>` : '';
+
+    hero.innerHTML = `
+      <div class="rst-total">
+        <div class="k">Total spent · ${rangeLabel()}</div>
+        <div class="v">${robuxGlyph(28)}${fmt(total)}</div>
+        ${cfg.showUsd ? `<div class="usd">that's about <b>${usd(total)}</b> of Robux${cfg.premium ? ' at Premium pack prices' : ''}</div>` : ''}
+        ${split}
+      </div>
+      <div class="rst-mini-stats">${cards.join('')}</div>`;
+  }
+
+  function paintIcons() {
+    if (!overlay) return;
+    overlay.querySelectorAll('img[data-uni]').forEach(img => {
+      const u = img.getAttribute('data-uni');
+      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
+    });
+  }
+
+  function paintIcons() {
+    if (!overlay) return;
+    overlay.querySelectorAll('img[data-uni]').forEach(img => {
+      const u = img.getAttribute('data-uni');
+      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
+    });
+  }
 
   const CAT_COLORS = {
     'Game Passes': '#00a2ff', 'Dev Products': '#a077ff', 'Private Servers': '#ff9a4d',
@@ -1733,13 +1763,9 @@
    * ------------------------------------------------------------------ */
   function render() {
     if (!overlay) return;
+    renderStats();
     setButtons();
-    renderNav();
     const body = $('#rst-body');
-    const m = pageMeta(ui.tab);
-    const ttl = $('#rst-title'), sb = $('#rst-pagesub');
-    if (ttl) ttl.textContent = ui.gameKey ? 'Game' : m.title;
-    if (sb) sb.textContent = ui.gameKey ? 'Everything you bought there' : m.sub;
 
     if (!state.records.length) {
       body.innerHTML = `<div class="rst-empty">
@@ -1755,39 +1781,76 @@
           <div class="rst-step"><div class="n">3</div><b>Keep it fresh</b>
             <span>“Check for new” afterwards only reads what changed — seconds, not minutes.</span></div>
         </div>
-        <button class="rst-btn pri" data-act="primary">Scan my purchases</button>
+        <button class="rst-cta" data-act="primary">Scan my purchases</button>
         <div class="rst-note">Nothing leaves your browser and nothing is changed on your account — this only reads.</div>
       </div>`;
       return;
     }
 
-    // the search row only makes sense on the list pages
-    const tools = document.getElementById('rst-tools');
-    if (tools) tools.style.display =
-      (ui.gameKey || ['games', 'items', 'sellers'].includes(ui.tab)) ? 'flex' : 'none';
-
     if (ui.gameKey) { renderGameDetail(body); return; }
-    if (ui.tab === 'overview') renderOverview(body);
-    else if (ui.tab === 'games') renderGames(body);
+    if (ui.tab === 'games') renderGames(body);
     else if (ui.tab === 'items') renderItems(body);
-    else if (ui.tab === 'money') renderMoney(body);
     else if (ui.tab === 'timeline') renderTimeline(body);
-    else if (ui.tab === 'year') renderYear(body);
-    else if (ui.tab === 'records') renderRecords(body);
-    else if (ui.tab === 'ledger') renderLedger(body);
-    else if (ui.tab === 'customize') renderCustomize(body);
     else renderSellers(body);
-    afterRender();
   }
 
+  function renderGames(body) {
+    const recs = spendRecords();
+    const games = sortGames(buildGames(recs));
+    const shown = games.filter(g => matchesQuery(g, ui.q));
+    const grand = games.reduce((s, g) => s + g.total, 0) || 1;
+    const shownTotal = shown.reduce((s, g) => s + g.total, 0);
+
+    if (!games.length) {
+      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
+        <h3>Nothing here looks like game spending</h3>
+        <p>${fmt(state.records.length)} records are stored, but none of them carry a Robux amount.
+        Open Settings and make sure <b>Purchases</b> is switched on, then rescan.</p></div>`;
+      return;
+    }
+    if (!shown.length) {
+      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
+        <h3>No matches</h3><p>Nothing matches “${escapeHtml(ui.q)}”.</p></div>`;
+      return;
+    }
+
+    let html = `<div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'}${ui.q ? ' matching' : ''} ·
+      <b style="color:var(--money)">${fmt(shownTotal)} R$</b>${cfg.showUsd ? ` (about ${usd(shownTotal)})` : ''}</div>`;
+
+    shown.slice(0, 300).forEach((g, i) => {
+      const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
+      const chips = cats.slice(0, 3).map(([c, v]) => `<span class="rst-chip ${catChipClass(c)}">${escapeHtml(c)} ${fmt(v)}</span>`).join('');
+      const inf = g.hasInferred ? '<span class="rst-chip inf">grouped by creator</span>' : '';
+      const pct = (g.total / grand) * 100;
+      html += `
+        <div class="rst-game" data-game="${escapeHtml(g.key)}">
+          <div class="rank">${i + 1}</div>
+          <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
+          <div class="nm">
+            <b>${escapeHtml(g.label)}</b>
+            <div class="meta">${fmt(g.count)} ${g.count === 1 ? 'purchase' : 'purchases'} ·
+              ${fmt(g.items.size)} ${g.items.size === 1 ? 'item' : 'different items'} · last ${ago(g.last)}</div>
+            <div class="rst-chips">${chips}${inf}</div>
+            <div class="rst-meter"><i style="width:${Math.max(2, pct)}%"></i></div>
+          </div>
+          <div class="amt">
+            <b>${robuxGlyph(16)}${fmt(g.total)}</b>
+            <small>${cfg.showUsd ? usd(g.total) + ' · ' : ''}${pct.toFixed(1)}%</small>
+          </div>
+        </div>`;
+    });
+
+    if (shown.length > 300) html += `<div class="rst-note">Showing the top 300 of ${fmt(shown.length)} groups.</div>`;
+    const r = dateRange(recs);
+    if (r.min) html += `<div class="rst-note">History returned by Roblox spans ${dstr(r.min)} → ${dstr(r.max)}.</div>`;
+
+    body.innerHTML = html;
+    fetchIcons(shown.slice(0, 120).map(g => g.universeId)).then(paintIcons);
+  }
 
   function renderGameDetail(body) {
-    const g = buildGames(spendRecords(), true).find(x => x.key === ui.gameKey);
+    const g = buildGames(spendRecords()).find(x => x.key === ui.gameKey);
     if (!g) { ui.gameKey = null; render(); return; }
-    // name the page after the game rather than a generic label
-    const ttl = $('#rst-title'), sb = $('#rst-pagesub');
-    if (ttl) ttl.textContent = g.label;
-    if (sb) sb.textContent = `${fmt(g.count)} purchases · ${fmt(g.items.size)} different items`;
 
     const cats = [...g.cats.entries()].sort((a, b) => b[1] - a[1]);
     const items = [...g.items.values()].sort((a, b) => b.total - a.total || b.count - a.count);
@@ -1822,9 +1885,7 @@
       </div>
 
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
-        <button class="rst-btn" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
-        <button class="rst-btn" data-act="ignore" style="height:32px;padding:0 12px;font-size:13px">${
-          isIgnored(g.key) ? 'Include in totals again' : 'Exclude from totals'}</button>
+        <button class="rst-cta sec" data-act="csv-game" style="height:32px;padding:0 12px;font-size:13px">Export this game</button>
         <span style="font-size:12.5px;color:var(--tx2)">Tap an item to see every purchase and when you made it.</span>
       </div>`;
 
@@ -1864,41 +1925,32 @@
     fetchIcons([g.universeId]).then(paintIcons);
   }
 
+  function renderItems(body) {
+    let items = allItems(spendRecords());
+    if (ui.q) items = items.filter(i => i.name.toLowerCase().includes(ui.q) || (i.game || '').toLowerCase().includes(ui.q) || i.cat.toLowerCase().includes(ui.q));
+    items.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
+      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
 
-  // Things you bought more than once, ranked by what the repeats cost you.
-  function repeatsHtml() {
-    const rep = repeatBuys().slice(0, 20);
-    if (!rep.length) return '';
-    return `<div class="rst-secttl"><b>You went back for these</b></div>
-      <table class="rst-table">
-        <thead><tr><th>Item</th><th>Where</th><th class="r">Times</th><th class="r">Each</th><th class="r">Total</th></tr></thead>
-        <tbody>${rep.map(r => `
-          <tr><td><b>${escapeHtml(r.name)}</b></td>
-            <td style="color:var(--tx2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.where || '—')}</td>
-            <td class="r"><b>×${fmt(r.count)}</b></td>
-            <td class="r">${fmt(r.total / r.count)}</td>
-            <td class="r g">${fmt(r.total)}</td></tr>`).join('')}
-        </tbody></table>`;
-  }
+    if (!items.length) { body.innerHTML = `<div class="rst-empty">Nothing matches.</div>`; return; }
 
-  // The single transactions that actually moved the needle.
-  function biggestHtml() {
-    const big = biggestPurchases(25);
-    if (!big.length) return '';
-    return `<div class="rst-secttl"><b>Biggest single purchases</b></div>
-      <table class="rst-table">
-        <thead><tr><th>#</th><th>Item</th><th>Game</th><th class="r">Robux</th><th class="r">When</th></tr></thead>
-        <tbody>${big.map((r, i) => `
-          <tr><td style="color:var(--tx2)">${i + 1}</td>
-            <td><b>${escapeHtml(r.itemName || r.itemType || 'Item')}</b></td>
-            <td style="color:var(--tx2);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(r.placeName || r.sellerName || '—')}</td>
-            <td class="r g">${fmt(r.amount)}</td>
-            <td class="r" style="color:var(--tx2)">${dstr(r.created)}</td></tr>`).join('')}
-        </tbody></table>`;
+    body.innerHTML = `<table class="rst-table">
+      <thead><tr><th>#</th><th>Item</th><th>Category</th><th>Where</th>
+        <th class="r">Bought</th><th class="r">Each</th><th class="r">Total</th><th class="r">Last</th></tr></thead>
+      <tbody>${items.slice(0, 500).map((i, n) => `
+        <tr><td style="color:var(--tx2)">${n + 1}</td>
+          <td><b>${escapeHtml(i.name)}</b></td>
+          <td><span class="rst-chip ${catChipClass(i.cat)}">${escapeHtml(i.cat)}</span></td>
+          <td style="color:var(--tx2);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(i.game || '—')}</td>
+          <td class="r"><b>×${fmt(i.count)}</b></td>
+          <td class="r">${fmt(i.total / i.count)}</td>
+          <td class="r g">${fmt(i.total)}</td>
+          <td class="r" style="color:var(--tx2)">${dstr(i.last)}</td></tr>`).join('')}
+      </tbody></table>
+      ${items.length > 500 ? `<div class="rst-note">Showing top 500 of ${fmt(items.length)} distinct items.</div>` : ''}`;
   }
 
   function renderTimeline(body) {
-    const months = monthly(activeSpend());
+    const months = monthly(spendRecords());
     if (!months.length) { body.innerHTML = `<div class="rst-empty">No dated purchases in this range.</div>`; return; }
     const max = Math.max(...months.map(m => m.total)) || 1;
 
@@ -1935,1390 +1987,12 @@
           <tr><td>${m.date.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</td>
           <td class="r">${fmt(m.count)}</td><td class="r g">${fmt(m.total)}</td>
           ${cfg.showUsd ? `<td class="r">${usd(m.total)}</td>` : ''}</tr>`).join('')}
-        </tbody></table>
-      ${cumulativeHtml()}${compareHtml()}${habitsHtml()}`;
-  }
-
-
-
-  /* ------------------------------------------------------------------ *
-   * Pages
-   * ------------------------------------------------------------------ */
-  const PAGES = [
-    { grp: 'Overview' },
-    { id: 'overview', label: 'Dashboard', icon: 'grid', title: 'Dashboard', sub: 'The short version' },
-    { id: 'money', label: 'Real money', icon: 'coin', title: 'Real money', sub: 'What you actually paid, reconciled from your Robux purchases' },
-    { grp: 'Where it went' },
-    { id: 'games', label: 'Games', icon: 'pie', title: 'Games', sub: 'Every game you have spent in' },
-    { id: 'items', label: 'Items', icon: 'tag', title: 'Items', sub: 'What you bought, how often, and what you went back for' },
-    { id: 'sellers', label: 'Creators', icon: 'people', title: 'Creators', sub: 'Who actually received your Robux' },
-    { grp: 'When' },
-    { id: 'timeline', label: 'Timeline', icon: 'chart', title: 'Timeline', sub: 'Month by month, and how it added up' },
-    { id: 'records', label: 'Records', icon: 'trophy', title: 'Records', sub: 'Streaks, milestones and the games that went quiet' },
-    { id: 'year', label: 'Year in review', icon: 'star', title: 'Year in review', sub: 'Pick a year and see how it went' },
-    { grp: 'Data' },
-    { id: 'ledger', label: 'All transactions', icon: 'list', title: 'All transactions', sub: 'Every type Roblox will show us' },
-    { id: 'customize', label: 'Customize', icon: 'gear', title: 'Customize', sub: 'Make it yours — everything is stored locally' }
-  ];
-  const pageMeta = id => PAGES.find(p => p.id === id) || PAGES[1];
-
-  const ACCENTS = [
-    ['#00a2ff', '#a077ff'], ['#a077ff', '#ff6fae'], ['#3ddc97', '#00a2ff'],
-    ['#ff9a4d', '#ff6b7a'], ['#ff6fae', '#a077ff'], ['#f2d24d', '#ff9a4d']
-  ];
-
-  /* ------------------------------------------------------------------ *
-   * Shell
-   * ------------------------------------------------------------------ */
-  function buildPanel() {
-    overlay = document.createElement('div');
-    overlay.id = 'rst-overlay';
-    overlay.innerHTML = `
-      <div id="rst-shell" data-theme="${effectiveTheme()}" data-density="${cfg.density || 'cozy'}">
-
-        <aside class="rst-rail">
-          <span class="mark">${ICONS.logo}</span>
-          <div id="rst-nav"></div>
-          <span class="spacer"></span>
-          <span class="rst-pulse" id="rst-chip" title="scan status"></span>
-          <span id="rst-chiptext" style="display:none"></span>
-          <span id="rst-sub" style="display:none"></span>
-        </aside>
-
-        <main class="rst-main">
-          <header class="rst-bar">
-            <div style="min-width:0">
-              <h1 id="rst-title">Dashboard</h1>
-              <div class="sub" id="rst-pagesub">The short version</div>
-            </div>
-            <div class="sp"></div>
-            <button class="rst-btn" data-act="palette" title="Search everything (Ctrl+K)">⌘ Search</button>
-            <button class="rst-btn pri" data-act="primary" id="rst-primary">Scan</button>
-            <button class="rst-ico" data-act="menu" title="More">${ICONS.dots}</button>
-            <button class="rst-ico" id="rst-close" title="Close (Esc)">${ICONS.close}</button>
-          </header>
-
-          <div class="rst-scan" id="rst-scan">
-            <span class="rst-spin"></span>
-            <span class="txt" id="rst-status">Idle</span>
-            <span class="clock" id="rst-elapsed"></span>
-            <button class="mini" data-act="pause">Pause</button>
-            <button class="mini" data-act="stop">Stop</button>
-            <span class="bar"><i></i></span>
-          </div>
-
-          <div class="rst-toast" id="rst-toast"><span id="rst-toast-text"></span><span class="x" data-act="dismiss">✕</span></div>
-
-          <div class="rst-tools" id="rst-tools">
-            <label class="rst-field">${ICONS.search}
-              <input class="rst-search" id="rst-search" placeholder="Search a game, item or creator…  ( / )">
-            </label>
-            <select class="rst-select" id="rst-sort">
-              <option value="total">Most spent</option>
-              <option value="count">Most purchases</option>
-              <option value="recent">Most recent</option>
-              <option value="name">Name A–Z</option>
-            </select>
-            <select class="rst-select" id="rst-range">
-              <option value="all">All time</option>
-              <option value="ytd">This year</option>
-              <option value="365">Last 12 months</option>
-              <option value="90">Last 90 days</option>
-              <option value="30">Last 30 days</option>
-            </select>
-          </div>
-
-          <div class="rst-body" id="rst-body"></div>
-        </main>
-
-        <div class="rst-menu" id="rst-menu">
-          <button data-act="update">${ICONS.refresh} Check for new</button>
-          <button data-act="scan">${ICONS.refresh} Rescan everything</button>
-          <button data-act="discover">${ICONS.wrench} Find every transaction type</button>
-          <button data-act="resume" id="rst-resume-btn">${ICONS.refresh} Resume interrupted scan</button>
-          <hr>
-          <button data-act="csv">${ICONS.down} Export CSV</button>
-          <button data-act="json">${ICONS.down} Export JSON</button>
-          <button data-act="copy">${ICONS.copy} Copy summary</button>
-          <button data-act="share">${ICONS.down} Save summary card</button>
-          <hr>
-          <button data-act="diag">${ICONS.wrench} Troubleshoot</button>
-          <button data-act="clear" class="danger">${ICONS.trash} Delete local data</button>
-        </div>
-
-        <div id="rst-cmd">
-          <div class="box">
-            <input id="rst-cmd-input" placeholder="Jump to a page, or search your games…" autocomplete="off">
-            <div class="list" id="rst-cmd-list"></div>
-          </div>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-
-    const diag = document.createElement('div');
-    diag.id = 'rst-diag';
-    diag.innerHTML = `
-      <div class="box">
-        <div class="rst-bar">
-          <div><h1 style="font-size:17px">Troubleshoot</h1><div class="sub">Send this to whoever is helping you</div></div>
-          <div class="sp"></div>
-          <button class="rst-btn" id="rst-diag-copy">Copy</button>
-          <button class="rst-ico" id="rst-diag-close">${ICONS.close}</button>
-        </div>
-        <textarea id="rst-diag-text" readonly></textarea>
-      </div>`;
-    document.body.appendChild(diag);
-
-    panel = overlay.querySelector('#rst-shell');
-    $ = sel => overlay.querySelector(sel) || diag.querySelector(sel);
-
-    applyAccent();
-    renderNav();
-    $('#rst-sort').value = ui.sort;
-    $('#rst-range').value = ui.range;
-  }
-
-
-  function applyAccent() {
-    const a = ACCENTS[cfg.accent] || ACCENTS[0];
-    if (panel) { panel.style.setProperty('--acc', a[0]); panel.style.setProperty('--acc2', a[1]); }
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Chrome
-   * ------------------------------------------------------------------ */
-  function setStatus(t) {
-    const el = document.getElementById('rst-status'); if (el) el.textContent = t;
-    const c = document.getElementById('rst-chiptext');
-    if (c && !state.running) c.textContent = state.records.length ? `${fmt(state.records.length)} records` : 'Nothing scanned';
-    else if (c) c.textContent = 'Scanning…';
-  }
-
-  function toast(msg, kind) {
-    const t = document.getElementById('rst-toast');
-    if (!t) return;
-    document.getElementById('rst-toast-text').textContent = msg;
-    t.className = 'rst-toast on ' + (kind || 'warn');
-  }
-  function clearToast() { const t = document.getElementById('rst-toast'); if (t) t.className = 'rst-toast'; }
-
-  function setButtons() {
-    if (!overlay) return;
-    const primary = $('#rst-primary');
-    if (primary) {
-      primary.textContent = state.running ? 'Scanning…' : state.records.length ? 'Check for new' : 'Scan';
-      primary.disabled = state.running;
-    }
-    const scan = document.getElementById('rst-scan');
-    if (scan) scan.classList.toggle('on', state.running);
-    const chip = document.getElementById('rst-chip');
-    if (chip) chip.classList.toggle('busy', state.running);
-    if (fab) fab.classList.toggle('busy', state.running);
-    ['rst-sidebtn', 'rst-pagebtn'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.classList.toggle('rst-scanning', state.running); el.title = state.running ? 'Robux Tracker — scanning…' : 'Robux Tracker'; }
-    });
-    const p = $('[data-act="pause"]'); if (p) p.textContent = state.paused ? 'Continue' : 'Pause';
-    const res = $('#rst-resume-btn'); if (res) res.style.display = store.get('progress', null) ? 'flex' : 'none';
-    const sub = $('#rst-sub');
-    if (sub) sub.textContent = state.lastScan ? 'updated ' + ago(state.lastScan) : 'never scanned';
-    const elp = document.getElementById('rst-elapsed'); if (elp && !state.running) elp.textContent = '';
-    const log = document.getElementById('rst-log'); if (log && state.log.length) log.textContent = state.log.join('\n');
-    setStatus(document.getElementById('rst-status') ? document.getElementById('rst-status').textContent : '');
-  }
-
-  const tile = (lb, big, sm) =>
-    `<div class="rst-tile"><div class="lb">${lb}</div><div class="big" style="font-size:24px">${big}</div>${
-      sm ? `<div class="sm">${sm}</div>` : ''}</div>`;
-
-  const msCard = (k, v, sub) =>
-    `<div class="rst-ms"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
-  const monthYear = t => new Date(t).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-
-  function renderStats() { setButtons(); }
-
-  function paintIcons() {
-    if (!overlay) return;
-    overlay.querySelectorAll('img[data-uni]').forEach(img => {
-      const u = img.getAttribute('data-uni');
-      if (u && ui.iconCache[u] && img.src !== ui.iconCache[u]) img.src = ui.iconCache[u];
-    });
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Dashboard
-   * ------------------------------------------------------------------ */
-
-
-
-  /* ------------------------------------------------------------------ *
-   * All transactions
-   * ------------------------------------------------------------------ */
-  function renderLedger(body) {
-    const rows = ledger();
-    const probe = discovered();
-    const untracked = CANDIDATE_TYPES.filter(t => !cfg.types.includes(t.id));
-
-    let html = `<div class="rst-note" style="margin:0 0 14px">
-      Roblox splits your history into separate ledgers. This is every one we can read, and what's in each.
-      ${probe ? `Last checked ${ago(probe.at)} — ${probe.valid.length} accepted, ${probe.dead.length} not available on your account.`
-        : 'Run <b>Find every transaction type</b> from the ⋯ menu to see which ones your account has.'}
-    </div>`;
-
-    if (rows.length) {
-      html += `<table class="rst-table">
-        <thead><tr><th>Ledger</th><th class="r">Entries</th><th class="r">Robux in</th><th class="r">Robux out</th><th class="r">Last</th></tr></thead>
-        <tbody>${rows.map(r => `
-          <tr><td><b>${escapeHtml(r.label)}</b> <small style="color:var(--tx2)">${escapeHtml(r.id)}</small></td>
-            <td class="r">${fmt(r.count)}</td>
-            <td class="r g">${r.inR ? fmt(r.inR) : '—'}</td>
-            <td class="r" style="color:var(--bad);font-weight:700">${r.outR ? fmt(r.outR) : '—'}</td>
-            <td class="r" style="color:var(--tx2)">${dstr(r.last)}</td></tr>`).join('')}
         </tbody></table>`;
-    }
-
-    html += `<div class="rst-secttl"><b>Ledgers to track</b></div>
-      <div class="rst-types" id="rst-typebar"></div>`;
-    if (untracked.length) html += `<div class="rst-note">Not tracked yet: ${
-      untracked.map(t => escapeHtml(t.label)).join(', ')}. Tap one to include it, then rescan.</div>`;
-
-    body.innerHTML = html;
-    renderTypeBar();
   }
 
-  function renderTypeBar() {
-    const bar = document.getElementById('rst-typebar');
-    if (!bar) return;
-    const probe = discovered();
-    const list = probe ? CANDIDATE_TYPES.filter(t => probe.valid.includes(t.id) || cfg.types.includes(t.id)) : CANDIDATE_TYPES;
-    bar.innerHTML = list.map(t => {
-      const has = probe && probe.withRows.includes(t.id);
-      return `<span class="rst-type ${cfg.types.includes(t.id) ? 'on' : ''}" data-type="${t.id}"
-        title="${escapeHtml(t.hint)}">${escapeHtml(t.label)}${has ? ' •' : ''}</span>`;
-    }).join('');
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Customize
-   * ------------------------------------------------------------------ */
-  function renderCustomize(body) {
-    body.innerHTML = `
-      <div class="rst-set">
-        <h4>Look</h4>
-        <p>Accent colour, density and theme. All stored on this machine.</p>
-        <div class="row" style="margin-bottom:12px">
-          <span class="rst-flabel">Accent</span>
-          <div class="rst-swatches">${ACCENTS.map((a, i) =>
-            `<span class="rst-sw ${cfg.accent === i ? 'on' : ''}" data-accent="${i}"
-              style="background:linear-gradient(140deg,${a[0]},${a[1]})"></span>`).join('')}</div>
-        </div>
-        <div class="row">
-          <span class="rst-flabel">Theme</span>
-          <select class="rst-select" id="rst-theme-sel">
-            <option value="auto">Match Roblox</option><option value="dark">Dark</option><option value="light">Light</option>
-          </select>
-          <span class="rst-flabel">Density</span>
-          <select class="rst-select" id="rst-density">
-            <option value="cozy">Cosy</option><option value="compact">Compact</option>
-          </select>
-          <span class="rst-flabel">Opens on</span>
-          <select class="rst-select" id="rst-home">
-            ${PAGES.filter(p => p.id).map(p => `<option value="${p.id}">${escapeHtml(p.label)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-
-      <div class="rst-set">
-        <h4>Money</h4>
-        <label class="rst-switch"><input type="checkbox" id="rst-usd" ${cfg.showUsd ? 'checked' : ''}>
-          <span>Show money values<span class="sub" id="rst-usd-note"></span></span></label>
-        <label class="rst-switch"><input type="checkbox" id="rst-premium" ${cfg.premium ? 'checked' : ''}>
-          <span>I have Roblox Premium<span class="sub">Premium gives more Robux per pack</span></span></label>
-        <div class="row" style="margin-top:12px">
-          <span class="rst-flabel">Currency</span>
-          <select class="rst-select" id="rst-curmode">
-            <option value="auto">Detected from my Buy Robux page</option>
-            <option value="usd">US dollars</option>
-            <option value="custom">Something else…</option>
-          </select>
-        </div>
-        <div class="row" id="rst-custom-row" style="margin-top:9px">
-          <span class="rst-flabel">Show as</span>
-          <select class="rst-select" id="rst-cursym">
-            ${['$', '€', '£', 'R$', 'C$', 'A$', '¥', '₹', '₽', '₺', 'kr', 'zł', 'R', '₩', '₪', 'CHF'].map(s =>
-              `<option value="${s}" ${cfg.curSymbol === s ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-          <span class="rst-flabel">and 1,000 R$ costs</span>
-          <input class="rst-num" id="rst-curper" type="number" min="0.01" step="0.01" value="${cfg.curPer1000}">
-        </div>
-        <div class="row" style="margin-top:10px">
-          <span class="rst-flabel">Price everything using</span>
-          <select class="rst-select" id="rst-refpack"></select>
-        </div>
-        <p style="margin:10px 0 0" id="rst-rate-note"></p>
-        <div class="row" style="margin-top:10px">
-          <a class="rst-btn" style="text-decoration:none;display:inline-flex;align-items:center;line-height:36px"
-             href="https://www.roblox.com/upgrades/robux" target="_blank" rel="noreferrer">Detect my local prices</a>
-        </div>
-      </div>
-
-      <div class="rst-set">
-        <h4>Grouping</h4>
-        <label class="rst-switch"><input type="checkbox" id="rst-merge" ${cfg.smartMerge ? 'checked' : ''}>
-          <span>Group loose purchases by creator<span class="sub">Attaches purchases with no game info to that creator's game when they only have one</span></span></label>
-      </div>
-
-      <div class="rst-set" id="rst-excluded-set">
-        <h4>Excluded games</h4>
-        <p>Left out of every total. Useful for catalog buys or a mis-grouped creator.</p>
-        <div id="rst-excluded"></div>
-      </div>
-
-      <div class="rst-set">
-        <h4>Scanning</h4>
-        <p id="rst-speed-note"></p>
-        <label class="rst-switch"><input type="checkbox" id="rst-turbo" ${cfg.turbo ? 'checked' : ''}>
-          <span>Faster scanning<span class="sub">Reads ${MAX_LANES} pages at once. Off by default — steady is gentler on Roblox.</span></span></label>
-        <div class="row" style="margin-top:9px">
-          <span class="rst-flabel">Pause between requests</span>
-          <input class="rst-num" id="rst-delay" type="number" min="${MIN_DELAY_MS}" step="50" value="${cfg.delayMs}">
-          <span class="rst-flabel">ms (minimum ${MIN_DELAY_MS})</span>
-        </div>
-      </div>
-
-      <div class="rst-set">
-        <h4>Scan log</h4>
-        <p>The last scan, page by page. Only useful if something looks wrong.</p>
-        <pre class="rst-log" id="rst-log">${state.log.length ? escapeHtml(state.log.join('\n')) : 'Nothing scanned yet.'}</pre>
-      </div>`;
-
-    $('#rst-theme-sel').value = cfg.theme;
-    $('#rst-density').value = cfg.density || 'cozy';
-    $('#rst-home').value = cfg.home || 'overview';
-    wireSettings();
-    refreshPricingUI();
-    renderExcluded();
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Command palette
-   * ------------------------------------------------------------------ */
-  function paletteItems(q) {
-    const out = [];
-    for (const p of PAGES) {
-      if (!p.id) continue;
-      if (!q || p.label.toLowerCase().includes(q)) out.push({ kind: 'page', id: p.id, label: p.label, hint: 'Page', icon: p.icon });
-    }
-    if (q) {
-      for (const g of sortGames(buildGames(activeSpend()))) {
-        if (g.label.toLowerCase().includes(q)) {
-          out.push({ kind: 'game', id: g.key, label: g.label, hint: fmt(g.total) + ' R$', icon: 'pie' });
-          if (out.length > 40) break;
-        }
-      }
-    }
-    return out.slice(0, 40);
-  }
-
-  function renderPalette() {
-    const list = $('#rst-cmd-list');
-    const items = paletteItems(ui.cmdQ);
-    ui.cmdItems = items;
-    if (ui.cmdSel >= items.length) ui.cmdSel = 0;
-    list.innerHTML = items.length ? items.map((it, i) =>
-      `<div class="row ${i === ui.cmdSel ? 'sel' : ''}" data-cmd="${i}">
-        ${ICONS[it.icon] || ICONS.pie}<span class="t">${escapeHtml(it.label)}</span><span class="h">${escapeHtml(it.hint)}</span>
-      </div>`).join('') : `<div class="none">Nothing matches “${escapeHtml(ui.cmdQ)}”</div>`;
-  }
-
-  function openPalette() {
-    ui.cmdQ = ''; ui.cmdSel = 0;
-    const box = document.getElementById('rst-cmd');
-    box.classList.add('on');
-    const inp = $('#rst-cmd-input');
-    inp.value = '';
-    renderPalette();
-    setTimeout(() => inp.focus(), 10);
-  }
-  function closePalette() { const b = document.getElementById('rst-cmd'); if (b) b.classList.remove('on'); }
-
-  function runPalette(i) {
-    const it = (ui.cmdItems || [])[i];
-    if (!it) return;
-    closePalette();
-    if (it.kind === 'page') go(it.id);
-    else { ui.tab = 'games'; ui.gameKey = it.id; renderNav(); render(); }
-  }
-
-  function go(tab) {
-    ui.tab = tab; ui.gameKey = null;
-    const m = pageMeta(tab);
-    const t = $('#rst-title'), s = $('#rst-pagesub');
-    if (t) t.textContent = m.title;
-    if (s) s.textContent = m.sub;
-    renderNav();
-    render();
-  }
-
-  // Settings live on their own page now, so their listeners are attached each
-  // time that page renders rather than once at boot.
-  function wireSettings() {
-    const on = (sel, ev, fn) => { const el = $(sel); if (el) el.addEventListener(ev, fn); };
-
-    on('#rst-theme-sel', 'change', e => { cfg.theme = e.target.value; saveCfg(); applyTheme(); render(); });
-    on('#rst-density', 'change', e => { cfg.density = e.target.value; saveCfg(); panel.setAttribute('data-density', cfg.density); });
-    on('#rst-home', 'change', e => { cfg.home = e.target.value; saveCfg(); });
-    on('#rst-turbo', 'change', e => { cfg.turbo = e.target.checked; saveCfg(); });
-    on('#rst-merge', 'change', e => { cfg.smartMerge = e.target.checked; saveCfg(); ui.gameKey = null; render(); });
-    on('#rst-usd', 'change', e => { cfg.showUsd = e.target.checked; saveCfg(); render(); });
-    on('#rst-premium', 'change', e => { cfg.premium = e.target.checked; saveCfg(); refreshPricingUI(); });
-    on('#rst-curmode', 'change', e => { cfg.priceMode = e.target.value; saveCfg(); refreshPricingUI(); });
-    on('#rst-cursym', 'change', e => { cfg.curSymbol = e.target.value; saveCfg(); refreshPricingUI(); });
-    on('#rst-curper', 'change', e => {
-      const v = parseFloat(e.target.value);
-      cfg.curPer1000 = (isFinite(v) && v > 0) ? v : 9.99;
-      e.target.value = cfg.curPer1000; saveCfg(); refreshPricingUI();
-    });
-    on('#rst-refpack', 'change', e => { cfg.refRobux = parseInt(e.target.value, 10) || 1000; saveCfg(); refreshPricingUI(); });
-    on('#rst-delay', 'change', e => {
-      cfg.delayMs = Math.max(MIN_DELAY_MS, Math.min(10000, parseInt(e.target.value, 10) || DEFAULTS.delayMs));
-      e.target.value = cfg.delayMs; state.curDelay = cfg.delayMs; saveCfg();
-    });
-  }
-
-  function wireEvents() {
-    $('#rst-close').onclick = closePanel;
-    overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
-
-    // follow the site's own theme when set to match it
-    try {
-      new MutationObserver(() => { if (cfg.theme === 'auto') applyTheme(); })
-        .observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    } catch (e) {}
-
-    document.addEventListener('keydown', e => {
-      if (!ui.open) return;
-      const cmdOpen = document.getElementById('rst-cmd').classList.contains('on');
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); cmdOpen ? closePalette() : openPalette(); return; }
-
-      if (cmdOpen) {
-        if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
-        else if (e.key === 'ArrowDown') { e.preventDefault(); ui.cmdSel = Math.min((ui.cmdItems || []).length - 1, ui.cmdSel + 1); renderPalette(); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); ui.cmdSel = Math.max(0, ui.cmdSel - 1); renderPalette(); }
-        else if (e.key === 'Enter') { e.preventDefault(); runPalette(ui.cmdSel); }
-        return;
-      }
-
-      if (e.key === 'Escape') {
-        const d = document.getElementById('rst-diag');
-        if (d.classList.contains('open')) d.classList.remove('open');
-        else if (document.getElementById('rst-menu').classList.contains('on')) closeMenu();
-        else if (ui.gameKey) { ui.gameKey = null; render(); }
-        else closePanel();
-      }
-      if (e.key === '/' && document.activeElement !== $('#rst-search')) {
-        const s = $('#rst-search');
-        if (s && s.offsetParent !== null) { e.preventDefault(); s.focus(); }
-      }
-    });
-
-    document.getElementById('rst-diag-close').onclick = () => document.getElementById('rst-diag').classList.remove('open');
-    document.getElementById('rst-diag-copy').onclick = () => {
-      const t = $('#rst-diag-text');
-      t.select();
-      (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject())
-        .then(() => { document.getElementById('rst-diag-copy').textContent = '✓ Copied'; })
-        .catch(() => { try { document.execCommand('copy'); } catch (e) {} });
-    };
-
-    // palette
-    $('#rst-cmd-input').addEventListener('input', e => { ui.cmdQ = e.target.value.trim().toLowerCase(); ui.cmdSel = 0; renderPalette(); });
-    document.getElementById('rst-cmd').addEventListener('click', e => {
-      const row = e.target.closest('[data-cmd]');
-      if (row) runPalette(parseInt(row.getAttribute('data-cmd'), 10));
-      else if (e.target.id === 'rst-cmd') closePalette();
-    });
-
-    panel.addEventListener('click', e => {
-      if (!e.target.closest('#rst-menu') && !e.target.closest('[data-act="menu"]')) closeMenu();
-    }, true);
-
-    panel.addEventListener('click', e => {
-      const actEl = e.target.closest('[data-act]');
-      if (actEl) {
-        const act = actEl.getAttribute('data-act');
-        if (act !== 'menu') closeMenu();
-        if (act === 'primary') runScan(state.records.length ? 'update' : 'full');
-        else if (act === 'menu') document.getElementById('rst-menu').classList.toggle('on');
-        else if (act === 'palette') openPalette();
-        else if (act === 'dismiss') clearToast();
-        else if (act === 'scan') runScan('full');
-        else if (act === 'update') runScan('update');
-        else if (act === 'resume') runScan('resume');
-        else if (act === 'discover') discoverTypes();
-        else if (act === 'pause') { state.paused = !state.paused; setButtons(); }
-        else if (act === 'stop') { state.stopped = true; setStatus('Stopping…'); }
-        else if (act === 'diag') runDiagnostics();
-        else if (act === 'csv') exportCSV();
-        else if (act === 'csv-game') exportGameCSV();
-        else if (act === 'json') exportJSON();
-        else if (act === 'copy') copyReport();
-        else if (act === 'share') shareCard();
-        else if (act === 'enable-currency') {
-          if (!cfg.types.includes('CurrencyPurchase')) cfg.types.push('CurrencyPurchase');
-          saveCfg(); runScan('full');
-        }
-        else if (act === 'ignore') { toggleIgnored(ui.gameKey); render(); }
-        else if (act === 'unignore') { toggleIgnored(actEl.getAttribute('data-key')); render(); }
-        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
-        else if (act === 'clear') {
-          if (!confirm('Delete everything this has scanned on this computer?\n\nNothing on your Roblox account changes.')) return;
-          state.records = []; state.ids.clear(); state.pages = 0; state.lastScan = null;
-          store.del('records'); store.del('progress'); store.del('lastScan');
-          ui.gameKey = null; render();
-        }
-        return;
-      }
-
-      const accEl = e.target.closest('[data-accent]');
-      if (accEl) { cfg.accent = parseInt(accEl.getAttribute('data-accent'), 10) || 0; saveCfg(); applyAccent(); render(); return; }
-
-      const navEl = e.target.closest('.rst-nav[data-tab]');
-      if (navEl) { go(navEl.getAttribute('data-tab')); return; }
-
-      const yearEl = e.target.closest('[data-year]');
-      if (yearEl) { ui.year = parseInt(yearEl.getAttribute('data-year'), 10); render(); return; }
-
-      const catEl = e.target.closest('[data-cat]');
-      if (catEl) { ui.cat = catEl.getAttribute('data-cat') || null; render(); return; }
-
-      const typeEl = e.target.closest('[data-type]');
-      if (typeEl) {
-        const id = typeEl.getAttribute('data-type');
-        const i = cfg.types.indexOf(id);
-        if (i < 0) cfg.types.push(id); else cfg.types.splice(i, 1);
-        if (!cfg.types.length) cfg.types = ['Purchase'];
-        saveCfg(); render();
-        return;
-      }
-
-      const itemEl = e.target.closest('[data-item]');
-      if (itemEl) {
-        const k = itemEl.getAttribute('data-item');
-        if (ui.expanded.has(k)) ui.expanded.delete(k); else ui.expanded.add(k);
-        render();
-        return;
-      }
-
-      const gameEl = e.target.closest('[data-game]');
-      if (gameEl) {
-        ui.gameKey = gameEl.getAttribute('data-game');
-        ui.expanded.clear();
-        if (ui.tab !== 'games') { ui.tab = 'games'; renderNav(); }
-        $('#rst-body').scrollTop = 0;
-        render();
-      }
-    });
-
-    // a price typed in for a pack we couldn't match
-    panel.addEventListener('change', e => {
-      const el = e.target.closest('[data-pack]');
-      if (!el) return;
-      const ov = store.get('packOverrides', {});
-      const v = parseFloat(el.value);
-      if (isFinite(v) && v > 0) ov[el.getAttribute('data-pack')] = v; else delete ov[el.getAttribute('data-pack')];
-      store.set('packOverrides', ov);
-      render();
-    });
-
-    let searchTimer = null;
-    $('#rst-search').addEventListener('input', e => {
-      const raw = e.target.value.trim().toLowerCase();
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(async () => {
-        ui.q = raw;
-        resolvedFilterUniverse = null;
-        const m = raw.match(/games\/(\d+)/);
-        const placeId = m ? m[1] : (/^\d{5,}$/.test(raw) ? raw : null);
-        if (placeId) {
-          const uni = await placeToUniverse(placeId);
-          if (uni) resolvedFilterUniverse = String(uni);
-        }
-        render();
-      }, 180);
-    });
-
-    $('#rst-sort').addEventListener('change', e => { ui.sort = e.target.value; render(); });
-    $('#rst-range').addEventListener('change', e => { ui.range = e.target.value; ui.gameKey = null; render(); });
-  }
-
-  function injectStyles() {
-    addStyle(`
-    #rst-overlay, #rst-shell, #rst-shell *{box-sizing:border-box;}
-
-    /* ================= launchers ================= */
-    #rst-sidebtn .rst-glyph{width:24px;height:24px;display:block;color:currentColor;position:relative;}
-    #rst-sidebtn .rst-glyph svg{width:100%;height:100%;display:block;}
-    .rst-scanning .rst-glyph:after, #rst-pagebtn.rst-scanning:after{content:"";position:absolute;top:-1px;right:-1px;
-      width:8px;height:8px;border-radius:50%;background:#00a2ff;box-shadow:0 0 0 2px rgba(0,0,0,.35);
-      animation:rst-pulse 1.2s ease-in-out infinite;}
-    #rst-pagebtn{position:relative;display:inline-flex;align-items:center;gap:7px;margin-left:12px;vertical-align:middle;
-      background:#00a2ff;color:#fff;border:none;border-radius:12px;padding:0 16px;height:38px;
-      font:800 14px/1 var(--rf);cursor:pointer;letter-spacing:-.2px;}
-    #rst-pagebtn:hover{filter:brightness(1.08);}
-    #rst-pagebtn svg{width:18px;height:18px;}
-    #rst-fab{position:fixed;right:20px;bottom:20px;z-index:2147483000;display:flex;align-items:center;
-      justify-content:center;background:#00a2ff;color:#fff;border:none;border-radius:999px;height:46px;width:46px;
-      cursor:pointer;box-shadow:0 8px 26px rgba(0,120,255,.45);transition:width .18s,padding .18s;overflow:hidden;padding:0;}
-    #rst-fab svg{width:23px;height:23px;flex:none;}
-    #rst-fab .lbl{white-space:nowrap;max-width:0;opacity:0;font:800 14px var(--rf);transition:max-width .18s,opacity .15s;}
-    #rst-fab:hover{width:186px;padding:0 18px;gap:10px;}
-    #rst-fab:hover .lbl{max-width:140px;opacity:1;}
-    #rst-fab.hide{display:none;}
-    #rst-fab.busy{animation:rst-pulse 1.6s ease-in-out infinite;}
-    @keyframes rst-pulse{0%,100%{opacity:1}50%{opacity:.35}}
-
-    /* ================= shell ================= */
-    #rst-overlay{position:fixed;inset:0;z-index:2147483001;background:rgba(2,3,6,.82);
-      backdrop-filter:blur(10px);display:none;align-items:center;justify-content:center;padding:0;}
-    #rst-overlay.open{display:flex;}
-
-    #rst-shell{
-      --rf:"Builder Sans","BuilderSans",-apple-system,"Segoe UI",system-ui,sans-serif;
-      --a1:#00a2ff; --a2:#a077ff;
-      --ink:#05060a; --sheet:#0c0e14; --card:#141821; --card2:#1b202b; --edge:rgba(255,255,255,.06);
-      --edge2:rgba(255,255,255,.13); --tx:#fbfcfe; --tx2:#7e8a9c; --cash:#38e08a; --hot:#ff5c7a; --warn:#ffc24b;
-      --pad:26px; --gap:16px;
-      width:100%;height:100%;display:flex;overflow:hidden;position:relative;
-      background:var(--ink);color:var(--tx);font:15px/1.5 var(--rf);
-      -webkit-font-smoothing:antialiased;animation:rst-in .22s cubic-bezier(.2,.9,.3,1);}
-    #rst-shell[data-theme="light"]{--ink:#eceef3;--sheet:#f6f7fa;--card:#fff;--card2:#eef1f6;
-      --edge:rgba(10,14,25,.08);--edge2:rgba(10,14,25,.16);--tx:#0a0e19;--tx2:#5f6a7d;--cash:#00a25e;}
-    #rst-shell[data-density="compact"]{--pad:16px;--gap:11px;font-size:14px;}
-    @keyframes rst-in{from{opacity:0;transform:scale(.99)}to{opacity:1;transform:none}}
-
-    /* ================= icon rail ================= */
-    .rst-rail{width:76px;flex:none;background:var(--sheet);border-right:1px solid var(--edge);
-      display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:6px;z-index:5;}
-    .rst-rail .mark{width:44px;height:44px;border-radius:15px;display:grid;place-items:center;color:#fff;flex:none;
-      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 8px 22px rgba(0,0,0,.45);margin-bottom:12px;}
-    .rst-rail .mark svg{width:23px;height:23px;}
-    .rst-rdiv{width:26px;height:1px;background:var(--edge2);margin:8px 0;flex:none;}
-    .rst-nav{width:50px;height:46px;border-radius:15px;border:none;background:none;color:var(--tx2);cursor:pointer;
-      display:grid;place-items:center;position:relative;flex:none;transition:color .14s,background .14s;}
-    .rst-nav svg{width:21px;height:21px;}
-    .rst-nav:hover{background:var(--card);color:var(--tx);}
-    .rst-nav.on{color:var(--tx);background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 30%,transparent),
-      color-mix(in srgb,var(--a2) 22%,transparent));}
-    .rst-nav.on:before{content:"";position:absolute;left:-13px;top:12px;bottom:12px;width:4px;border-radius:0 4px 4px 0;
-      background:linear-gradient(180deg,var(--a1),var(--a2));}
-    .rst-nav .tip{position:absolute;left:58px;top:50%;transform:translateY(-50%) scale(.94);transform-origin:left center;
-      background:var(--card2);color:var(--tx);border:1px solid var(--edge2);padding:6px 11px;border-radius:9px;
-      font:700 12.5px var(--rf);white-space:nowrap;opacity:0;pointer-events:none;transition:all .13s;z-index:30;}
-    .rst-nav:hover .tip{opacity:1;transform:translateY(-50%) scale(1);}
-    .rst-rail .spacer{flex:1;}
-    .rst-pulse{width:9px;height:9px;border-radius:50%;background:var(--cash);flex:none;margin-bottom:4px;}
-    .rst-pulse.busy{background:var(--a1);animation:rst-pulse 1.1s infinite;}
-
-    /* ================= page ================= */
-    .rst-main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--ink);}
-    .rst-bar{display:flex;align-items:center;gap:12px;padding:22px var(--pad) 0;flex:none;}
-    .rst-bar h1{margin:0;font-size:34px;font-weight:900;letter-spacing:-1.3px;line-height:1;}
-    .rst-bar .sub{font-size:13.5px;color:var(--tx2);margin-top:7px;}
-    .rst-bar .sp{flex:1;}
-    .rst-btn{height:42px;padding:0 18px;border-radius:13px;border:1px solid var(--edge2);background:var(--card);
-      color:var(--tx);font:800 13.5px var(--rf);cursor:pointer;white-space:nowrap;letter-spacing:-.2px;transition:.14s;}
-    .rst-btn:hover:not(:disabled){background:var(--card2);transform:translateY(-1px);}
-    .rst-btn.pri{background:linear-gradient(135deg,var(--a1),var(--a2));border-color:transparent;color:#fff;
-      box-shadow:0 8px 22px color-mix(in srgb,var(--a1) 35%,transparent);}
-    .rst-btn:disabled{opacity:.4;cursor:not-allowed;}
-    .rst-ico{width:42px;height:42px;border-radius:13px;border:1px solid var(--edge2);background:var(--card);
-      color:var(--tx2);display:grid;place-items:center;cursor:pointer;flex:none;}
-    .rst-ico:hover{background:var(--card2);color:var(--tx);}
-    .rst-ico svg{width:18px;height:18px;}
-
-    .rst-scan{display:none;align-items:center;gap:13px;margin:16px var(--pad) 0;padding:13px 17px;border-radius:15px;
-      background:linear-gradient(120deg,color-mix(in srgb,var(--a1) 16%,var(--card)),var(--card));
-      border:1px solid var(--edge2);position:relative;overflow:hidden;flex:none;font-size:13.5px;}
-    .rst-scan.on{display:flex;}
-    .rst-spin{width:17px;height:17px;border-radius:50%;border:2.5px solid color-mix(in srgb,var(--a1) 28%,transparent);
-      border-top-color:var(--a1);animation:rst-spin .7s linear infinite;flex:none;}
-    @keyframes rst-spin{to{transform:rotate(360deg)}}
-    .rst-scan .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}
-    .rst-scan .clock{font:800 13px ui-monospace,Consolas,monospace;color:var(--tx2);}
-    .rst-scan .mini{height:31px;padding:0 13px;border-radius:10px;border:1px solid var(--edge2);background:var(--card2);
-      color:var(--tx);font:800 12px var(--rf);cursor:pointer;}
-    .rst-scan .bar{position:absolute;left:0;bottom:0;height:3px;width:100%;overflow:hidden;}
-    .rst-scan .bar i{display:block;height:100%;width:26%;border-radius:3px;
-      background:linear-gradient(90deg,var(--a1),var(--a2));animation:rst-slide 1.1s infinite ease-in-out;}
-    @keyframes rst-slide{0%{margin-left:-26%}100%{margin-left:100%}}
-
-    .rst-toast{display:none;align-items:center;gap:11px;margin:14px var(--pad) 0;padding:13px 17px;border-radius:14px;
-      font-size:13.5px;flex:none;border:1px solid;}
-    .rst-toast.on{display:flex;}
-    .rst-toast.warn{background:color-mix(in srgb,var(--warn) 13%,transparent);color:var(--warn);
-      border-color:color-mix(in srgb,var(--warn) 35%,transparent);}
-    .rst-toast .x{margin-left:auto;cursor:pointer;opacity:.7;}
-
-    .rst-body{flex:1;overflow:auto;padding:22px var(--pad) 40px;}
-    .rst-body::-webkit-scrollbar{width:12px}
-    .rst-body::-webkit-scrollbar-thumb{background:var(--card2);border-radius:9px;border:4px solid var(--ink)}
-
-    .rst-tools{display:flex;gap:11px;align-items:center;flex-wrap:wrap;}
-    .rst-main > .rst-tools{padding:18px var(--pad) 0;flex:none;}
-    .rst-field{flex:1;min-width:230px;position:relative;display:flex;align-items:center;}
-    .rst-field svg{position:absolute;left:15px;width:17px;height:17px;color:var(--tx2);pointer-events:none;}
-    .rst-search{width:100%;height:46px;background:var(--card);border:1px solid var(--edge);border-radius:14px;
-      color:var(--tx);padding:0 15px 0 42px;font:15px var(--rf);}
-    .rst-search:focus{outline:none;border-color:var(--a1);background:var(--card2);}
-    .rst-select{height:46px;background:var(--card);border:1px solid var(--edge);border-radius:14px;color:var(--tx);
-      padding:0 13px;font:800 13px var(--rf);cursor:pointer;}
-
-    /* ================= display numbers ================= */
-    .rst-display{font-size:clamp(46px,7vw,84px);font-weight:900;letter-spacing:-4px;line-height:.92;
-      display:flex;align-items:center;gap:16px;margin-top:14px;}
-    /* the glyph is 1em by default, which is enormous at display sizes */
-    .rst-display .rst-rbx{width:.52em;height:.52em;transform:none;margin:0;opacity:.9;}
-    .rst-display .rst-rbxs{transform:scale(1.7);margin:0 12px 0 8px;}
-
-    /* ================= hero ================= */
-    .rst-stage{border-radius:28px;padding:34px 36px;position:relative;overflow:hidden;margin-bottom:var(--gap);
-      background:radial-gradient(120% 140% at 0% 0%, color-mix(in srgb,var(--a1) 34%,var(--card)) 0%, var(--card) 58%),
-                 linear-gradient(135deg,transparent,color-mix(in srgb,var(--a2) 22%,transparent));
-      border:1px solid var(--edge2);}
-    .rst-stage .eyebrow{font-size:12px;font-weight:900;letter-spacing:2.4px;text-transform:uppercase;color:var(--tx2);}
-    .rst-stage .cap{font-size:15px;color:var(--tx2);margin-top:14px;max-width:62ch;line-height:1.6;}
-    .rst-stage .cap b{color:var(--tx);}
-    .rst-stage .spark{position:absolute;right:0;bottom:0;left:35%;height:66%;opacity:.4;pointer-events:none;}
-    .rst-stage .spark svg{width:100%;height:100%;display:block;}
-
-    /* ================= tiles ================= */
-    .rst-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:var(--gap);margin-bottom:var(--gap);}
-    .rst-tile{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:20px 22px;min-width:0;
-      position:relative;overflow:hidden;transition:transform .14s,border-color .14s;}
-    .rst-tile:hover{transform:translateY(-2px);border-color:var(--edge2);}
-    .rst-tile .lb{font-size:11px;font-weight:900;letter-spacing:1.4px;text-transform:uppercase;color:var(--tx2);}
-    .rst-tile .big{font-size:30px;font-weight:900;letter-spacing:-1.4px;margin-top:10px;display:flex;align-items:center;gap:7px;line-height:1.05;}
-    .rst-tile .big.money{color:var(--cash);}
-    .rst-tile .sm{font-size:12.5px;color:var(--tx2);margin-top:7px;line-height:1.5;}
-    .rst-tile.accent{background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 26%,var(--card)),var(--card));}
-    .rst-tile.wide{grid-column:span 2;}
-    @media (max-width:900px){.rst-tile.wide{grid-column:span 1;}}
-
-    .rst-delta{display:inline-flex;align-items:center;gap:5px;font-weight:900;font-size:12px;
-      padding:4px 10px;border-radius:999px;letter-spacing:-.2px;}
-    .rst-delta.up{background:color-mix(in srgb,var(--hot) 18%,transparent);color:var(--hot);}
-    .rst-delta.down{background:color-mix(in srgb,var(--cash) 18%,transparent);color:var(--cash);}
-    .rst-delta.flat{background:var(--card2);color:var(--tx2);}
-
-    /* ================= game cover grid ================= */
-    .rst-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(208px,1fr));gap:var(--gap);}
-    .rst-gcard{position:relative;border-radius:22px;overflow:hidden;cursor:pointer;background:var(--card);
-      border:1px solid var(--edge);transition:transform .16s,box-shadow .16s,border-color .16s;}
-    .rst-gcard:hover{transform:translateY(-4px);border-color:var(--a1);
-      box-shadow:0 18px 40px rgba(0,0,0,.5);}
-    .rst-gcard .cover{position:relative;aspect-ratio:1/1;overflow:hidden;background:var(--card2);}
-    .rst-gcard .cover img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .5s;}
-    .rst-gcard:hover .cover img{transform:scale(1.07);}
-    .rst-gcard .cover:after{content:"";position:absolute;inset:0;
-      background:linear-gradient(180deg,transparent 38%,rgba(4,5,9,.92) 100%);}
-    .rst-gcard .rank{position:absolute;top:12px;left:12px;z-index:2;width:30px;height:30px;border-radius:11px;
-      display:grid;place-items:center;font:900 13px var(--rf);color:#fff;backdrop-filter:blur(8px);
-      background:rgba(6,8,14,.66);border:1px solid rgba(255,255,255,.18);}
-    .rst-gcard .rank.top{background:linear-gradient(145deg,var(--a1),var(--a2));border-color:transparent;}
-    .rst-gcard .amt{position:absolute;left:14px;right:14px;bottom:12px;z-index:2;display:flex;align-items:flex-end;
-      justify-content:space-between;gap:8px;}
-    .rst-gcard .amt b{font-size:25px;font-weight:900;letter-spacing:-1.1px;color:#fff;line-height:1;
-      text-shadow:0 2px 12px rgba(0,0,0,.6);display:flex;align-items:center;gap:5px;}
-    .rst-gcard .amt span{font-size:11.5px;font-weight:800;color:rgba(255,255,255,.72);padding-bottom:2px;}
-    .rst-gcard .meta{padding:13px 15px 15px;}
-    .rst-gcard .meta b{display:block;font-size:14.5px;font-weight:800;letter-spacing:-.3px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-gcard .meta .s{font-size:12px;color:var(--tx2);margin-top:3px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-gcard .wash{position:absolute;left:0;right:0;bottom:0;height:3px;
-      background:linear-gradient(90deg,var(--a1),var(--a2));}
-
-    /* ================= item chips ================= */
-    .rst-ichips{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
-    .rst-ichip{display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:18px;background:var(--card);
-      border:1px solid var(--edge);cursor:pointer;transition:.14s;min-width:0;}
-    .rst-ichip:hover{border-color:var(--a1);transform:translateY(-2px);}
-    .rst-ichip .mult{font:900 15px var(--rf);color:#fff;min-width:52px;height:44px;border-radius:14px;flex:none;
-      display:grid;place-items:center;letter-spacing:-.5px;background:linear-gradient(145deg,var(--a1),var(--a2));}
-    .rst-ichip .nm{flex:1;min-width:0;}
-    .rst-ichip .nm b{display:block;font-size:14.5px;font-weight:800;letter-spacing:-.2px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-ichip .nm .s{font-size:12px;color:var(--tx2);margin-top:2px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-ichip .amt{font:900 17px var(--rf);color:var(--cash);letter-spacing:-.6px;white-space:nowrap;}
-
-    /* ================= sections ================= */
-    .rst-h{display:flex;align-items:baseline;gap:12px;margin:30px 0 15px;}
-    .rst-h h2{margin:0;font-size:21px;font-weight:900;letter-spacing:-.7px;}
-    .rst-h .c{font-size:13px;color:var(--tx2);}
-    .rst-h .line{flex:1;height:1px;background:var(--edge);}
-    .rst-secttl{display:flex;align-items:baseline;gap:12px;margin:30px 0 15px;
-      font-size:21px;font-weight:900;letter-spacing:-.7px;color:var(--tx);text-transform:none;}
-    .rst-secttl b{font-weight:900;}
-    .rst-secttl:after{content:"";flex:1;height:1px;background:var(--edge);}
-
-    .rst-seg{display:inline-flex;padding:4px;background:var(--card);border:1px solid var(--edge);border-radius:14px;gap:3px;flex-wrap:wrap;}
-    .rst-seg span, .rst-type{padding:9px 16px;border-radius:11px;font:800 13px var(--rf);color:var(--tx2);
-      cursor:pointer;user-select:none;transition:.13s;border:none;background:none;letter-spacing:-.2px;}
-    .rst-seg span:hover, .rst-type:hover{color:var(--tx);}
-    .rst-seg span.on, .rst-type.on{background:linear-gradient(145deg,var(--a1),var(--a2));color:#fff;}
-    .rst-types,.rst-cats,.rst-yearpick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;}
-    .rst-types .rst-type,.rst-cats .rst-type,.rst-yearpick .rst-type{background:var(--card);border:1px solid var(--edge);}
-    .rst-types .rst-type.on,.rst-cats .rst-type.on,.rst-yearpick .rst-type.on{border-color:transparent;}
-
-    .rst-summary{font-size:13.5px;color:var(--tx2);margin:0 0 16px;}
-    .rst-summary b{color:var(--cash);}
-
-    /* ================= detail ================= */
-    .rst-back{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;background:var(--card);border:1px solid var(--edge);
-      color:var(--tx2);font:800 13px var(--rf);cursor:pointer;padding:9px 15px;border-radius:12px;margin-bottom:18px;}
-    .rst-back:hover{color:var(--tx);border-color:var(--edge2);}
-    .rst-dhead{display:flex;gap:24px;align-items:center;padding:28px;border-radius:26px;margin-bottom:20px;flex-wrap:wrap;
-      background:radial-gradient(110% 150% at 0% 0%,color-mix(in srgb,var(--a1) 26%,var(--card)),var(--card));
-      border:1px solid var(--edge2);}
-    .rst-dhead img{width:112px;height:112px;border-radius:24px;background:var(--card2);flex:none;object-fit:cover;
-      box-shadow:0 14px 34px rgba(0,0,0,.45);}
-    .rst-dhead h2{margin:0 0 7px;font-size:30px;font-weight:900;letter-spacing:-1.1px;line-height:1.1;}
-    .rst-dhead .meta{font-size:13px;color:var(--tx2);line-height:1.8;}
-    .rst-dhead .big{margin-left:auto;text-align:right;}
-    .rst-dhead .big b{display:flex;align-items:center;gap:9px;font-size:44px;font-weight:900;color:var(--cash);letter-spacing:-2px;line-height:1;}
-    .rst-dhead .big small{font-size:12.5px;color:var(--tx2);font-weight:700;display:block;margin-top:8px;}
-
-    .rst-catbar{display:flex;height:14px;border-radius:8px;overflow:hidden;margin-bottom:12px;background:var(--card2);gap:2px;}
-    .rst-catbar i{border-radius:3px;}
-    .rst-catkey{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--tx2);margin-bottom:8px;}
-    .rst-catkey span{display:flex;align-items:center;gap:7px;}
-    .rst-catkey i{width:11px;height:11px;border-radius:4px;display:inline-block;}
-
-    .rst-item{display:flex;align-items:center;gap:14px;padding:14px 17px;border-radius:18px;margin-bottom:9px;
-      background:var(--card);cursor:pointer;border:1px solid var(--edge);transition:.14s;}
-    .rst-item:hover{border-color:var(--a1);}
-    .rst-item .x{font:900 14px var(--rf);color:#fff;background:linear-gradient(145deg,var(--a1),var(--a2));
-      border-radius:13px;padding:9px 13px;flex:none;min-width:56px;text-align:center;letter-spacing:-.4px;}
-    .rst-item .nm{flex:1;min-width:0;}
-    .rst-item .nm b{display:block;font-weight:800;font-size:15px;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-item .nm small{color:var(--tx2);font-size:12.5px;}
-    .rst-item .tot{font:900 19px var(--rf);color:var(--cash);white-space:nowrap;display:flex;align-items:center;gap:6px;letter-spacing:-.7px;}
-    .rst-item .tot small{color:var(--tx2);font-weight:700;font-size:11.5px;letter-spacing:0;}
-    .rst-txs{margin:-4px 0 14px 30px;border-left:2px solid var(--edge2);padding-left:18px;}
-    .rst-tx{display:flex;justify-content:space-between;gap:10px;padding:7px 0;font-size:13px;color:var(--tx2);}
-    .rst-tx b{color:var(--tx);font-weight:800;}
-
-    /* ================= charts ================= */
-    .rst-chart{display:flex;align-items:flex-end;gap:5px;height:250px;padding:22px;background:var(--card);
-      border:1px solid var(--edge);border-radius:24px;overflow-x:auto;}
-    .rst-chart .bar{flex:1;min-width:11px;border-radius:7px 7px 3px 3px;
-      background:linear-gradient(180deg,var(--a1),color-mix(in srgb,var(--a2) 70%,transparent));transition:filter .12s;}
-    .rst-chart .bar:hover{filter:brightness(1.35);}
-    .rst-chart .bar.zero{background:var(--card2);}
-    .rst-axis{display:flex;justify-content:space-between;font-size:12px;color:var(--tx2);padding:12px 6px 0;font-weight:600;}
-    .rst-cum{background:var(--card);border:1px solid var(--edge);border-radius:24px;padding:18px;height:250px;}
-    .rst-cum svg{width:100%;height:100%;display:block;}
-    .rst-habits{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--gap);}
-    .rst-habit .t{font-size:13px;color:var(--tx2);margin-bottom:11px;font-weight:600;}
-    .rst-habit b{color:var(--tx);}
-
-    /* ================= data sheet ================= */
-    .rst-sheetwrap{background:var(--card);border:1px solid var(--edge);border-radius:22px;overflow:hidden;}
-    .rst-table{width:100%;border-collapse:collapse;font-size:14px;}
-    .rst-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--tx2);
-      padding:15px 20px;background:var(--card2);font-weight:900;border:none;position:static;}
-    .rst-table td{padding:14px 20px;border-top:1px solid var(--edge);}
-    .rst-table tr:hover td{background:var(--card2);}
-    .rst-table .r{text-align:right;white-space:nowrap;}
-    .rst-table .g{color:var(--cash);font-weight:900;letter-spacing:-.3px;}
-    .rst-table .up{color:var(--hot);font-weight:900;}
-    .rst-table .down{color:var(--cash);font-weight:900;}
-    .rst-table .flat{color:var(--tx2);}
-    .rst-table b{font-weight:800;}
-
-    /* ================= misc ================= */
-    .rst-mini-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--gap);}
-    .rst-ms{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:20px 22px;min-width:0;}
-    .rst-ms .k{font-size:11px;color:var(--tx2);font-weight:900;text-transform:uppercase;letter-spacing:1.4px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .rst-ms .v{font-size:29px;font-weight:900;margin-top:10px;display:flex;align-items:center;gap:7px;
-      white-space:nowrap;letter-spacing:-1.3px;line-height:1.05;}
-    .rst-ms .v small{font-size:14px;color:var(--tx2);font-weight:800;letter-spacing:0;}
-    .rst-ms .s{font-size:12.5px;color:var(--tx2);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-
-    /* the glyph is sized off the surrounding text, so it needs pulling back
-       wherever that text is display-scale */
-    .rst-rbx{display:inline-block;width:.8em;height:.8em;vertical-align:-.06em;flex:none;}
-    .rst-wrap-hero .v .rst-rbx, .rst-display .rst-rbx{width:.52em;height:.52em;opacity:.9;}
-    .rst-dhead .big .rst-rbx{width:.62em;height:.62em;}
-    .rst-wrap-hero .v .rst-rbxs{transform:scale(1.6);margin:0 10px 0 6px;}
-    .rst-rbx svg{width:100%;height:100%;display:block;}
-    .rst-rbxs{display:inline-block;vertical-align:-.14em;margin-right:3px;flex:none;}
-
-    .rst-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px;}
-    .rst-chip{font-size:11px;font-weight:800;padding:4px 10px;border-radius:8px;background:var(--card2);
-      color:var(--tx2);border:1px solid var(--edge);letter-spacing:-.1px;}
-    .rst-chip.pass{color:#6cc9ff;} .rst-chip.prod{color:#bda4ff;} .rst-chip.serv{color:#ffb27a;}
-    .rst-chip.inf{color:var(--warn);}
-    .rst-meter{height:5px;border-radius:4px;background:var(--card2);margin-top:10px;overflow:hidden;}
-    .rst-meter i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--a1),var(--a2));}
-
-    .rst-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:var(--gap);}
-    .rst-card{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:22px;}
-    .rst-card .t{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--tx2);font-weight:900;}
-    .rst-card .b{font-size:21px;font-weight:900;margin:10px 0 5px;letter-spacing:-.7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    .rst-card .s{font-size:13px;color:var(--tx2);}
-
-    .rst-timeline{position:relative;}
-    .rst-mile{display:flex;gap:16px;align-items:flex-start;padding:14px 0 14px 22px;position:relative;
-      border-left:2px solid var(--edge2);}
-    .rst-mile .dot{position:absolute;left:-7px;top:19px;width:12px;height:12px;border-radius:50%;
-      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 0 0 4px var(--ink);}
-    .rst-mile .dot.count{background:linear-gradient(145deg,var(--a2),var(--hot));}
-    .rst-mile b{font-size:15.5px;font-weight:800;letter-spacing:-.2px;}
-    .rst-mile .s{font-size:12.5px;color:var(--tx2);margin-top:3px;}
-
-    .rst-recon{border-radius:22px;padding:20px 24px;margin-bottom:20px;border:1px solid;}
-    .rst-recon.ok{background:color-mix(in srgb,var(--cash) 11%,transparent);border-color:color-mix(in srgb,var(--cash) 38%,transparent);}
-    .rst-recon.off{background:color-mix(in srgb,var(--warn) 11%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent);}
-    .rst-recon .t{font-weight:900;font-size:17px;margin-bottom:7px;letter-spacing:-.4px;}
-    .rst-recon .s{font-size:13.5px;color:var(--tx2);line-height:1.75;}
-    .rst-recon b{color:var(--tx);}
-
-    .rst-money-top{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:10px;}
-    .rst-money-top .rst-tile{flex:1;min-width:270px;}
-    .rst-wrap-hero{border-radius:28px;padding:36px;margin-bottom:20px;border:1px solid var(--edge2);
-      background:radial-gradient(120% 150% at 100% 0%,color-mix(in srgb,var(--a2) 32%,var(--card)),var(--card));}
-    .rst-wrap-hero .k{font-size:12px;color:var(--tx2);font-weight:900;text-transform:uppercase;letter-spacing:2.4px;}
-    .rst-wrap-hero .v{display:flex;align-items:center;gap:12px;font-size:clamp(44px,6vw,72px);font-weight:900;
-      letter-spacing:-3.4px;line-height:1;margin:14px 0 12px;}
-    .rst-wrap-hero .usd{font-size:14.5px;color:var(--tx2);}
-    .rst-wrap-hero .usd b{color:var(--tx);}
-
-    .rst-empty{text-align:center;color:var(--tx2);padding:70px 20px;}
-    .rst-empty .ico{width:78px;height:78px;margin:0 auto 22px;border-radius:26px;display:grid;place-items:center;color:#fff;
-      background:linear-gradient(145deg,var(--a1),var(--a2));box-shadow:0 16px 40px color-mix(in srgb,var(--a1) 40%,transparent);}
-    .rst-empty .ico svg{width:40px;height:40px;}
-    .rst-empty h3{margin:0 0 12px;font-size:30px;font-weight:900;color:var(--tx);letter-spacing:-1.2px;}
-    .rst-empty p{margin:0 auto 26px;max-width:500px;font-size:15px;line-height:1.75;}
-    .rst-steps{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:28px;}
-    .rst-step{background:var(--card);border:1px solid var(--edge);border-radius:22px;padding:22px;width:225px;text-align:left;}
-    .rst-step .n{width:30px;height:30px;border-radius:11px;color:#fff;font:900 14px var(--rf);
-      background:linear-gradient(145deg,var(--a1),var(--a2));display:grid;place-items:center;margin-bottom:13px;}
-    .rst-step b{display:block;font-size:15px;color:var(--tx);margin-bottom:5px;font-weight:800;}
-    .rst-step span{font-size:13px;line-height:1.65;}
-
-    .rst-note{font-size:13px;color:var(--tx2);margin-top:18px;line-height:1.75;}
-    a.rst-link{color:var(--a1);text-decoration:none;font-weight:700;}
-    a.rst-link:hover{text-decoration:underline;}
-    .rst-exrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;
-      border-bottom:1px solid var(--edge);font-size:14px;}
-    .rst-exrow small{color:var(--tx2);}
-
-    /* ================= settings ================= */
-    .rst-set{background:var(--card);border:1px solid var(--edge);border-radius:24px;padding:24px 26px;margin-bottom:var(--gap);}
-    .rst-set h4{margin:0 0 6px;font-size:19px;font-weight:900;letter-spacing:-.6px;}
-    .rst-set p{margin:0 0 17px;font-size:13.5px;color:var(--tx2);line-height:1.75;}
-    .rst-set .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
-    .rst-flabel{font-size:13.5px;color:var(--tx2);font-weight:600;}
-    .rst-num{width:104px;height:44px;background:var(--card2);border:1px solid var(--edge2);color:var(--tx);
-      border-radius:13px;padding:0 14px;font:800 14px var(--rf);}
-    .rst-switch{display:flex;align-items:center;gap:13px;font-size:14.5px;color:var(--tx);cursor:pointer;
-      user-select:none;padding:11px 0;font-weight:600;}
-    .rst-switch input{appearance:none;width:46px;height:27px;border-radius:999px;background:var(--card2);
-      border:1px solid var(--edge2);position:relative;cursor:pointer;transition:.15s;flex:none;margin:0;}
-    .rst-switch input:checked{background:linear-gradient(145deg,var(--a1),var(--a2));border-color:transparent;}
-    .rst-switch input:after{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;
-      background:#fff;transition:transform .16s;}
-    .rst-switch input:checked:after{transform:translateX(19px);}
-    .rst-switch .sub{font-size:12.5px;color:var(--tx2);display:block;font-weight:500;margin-top:2px;}
-    .rst-swatches{display:flex;gap:11px;flex-wrap:wrap;}
-    .rst-sw{width:44px;height:44px;border-radius:15px;cursor:pointer;border:3px solid transparent;transition:.14s;}
-    .rst-sw:hover{transform:scale(1.08);}
-    .rst-sw.on{border-color:var(--tx);}
-    .rst-log{margin:0;padding:18px;background:rgba(0,0,0,.45);color:var(--tx2);border-radius:16px;max-height:260px;
-      overflow:auto;font:11.5px/1.7 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;}
-
-    /* ================= motion ================= */
-    @keyframes rst-rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-    .rst-rise{animation:rst-rise .42s cubic-bezier(.2,.9,.3,1) both;}
-    @media (prefers-reduced-motion:reduce){.rst-rise{animation:none;}}
-
-    /* ================= hero chart ================= */
-    .rst-stage{padding-bottom:0;}
-    .rst-stage .stagetop{display:flex;align-items:center;gap:30px;justify-content:space-between;flex-wrap:wrap;
-      padding-bottom:20px;position:relative;z-index:2;}
-    .rst-stage .glow{position:absolute;width:520px;height:520px;left:-160px;top:-260px;pointer-events:none;
-      background:radial-gradient(circle,color-mix(in srgb,var(--a1) 42%,transparent),transparent 66%);filter:blur(18px);}
-    .rst-area{position:relative;height:170px;margin:0 -36px;color:var(--tx);}
-    .rst-area svg{width:100%;height:100%;display:block;}
-    .rst-area .hover{position:absolute;inset:0;display:flex;}
-    .rst-area .hover i{flex:1;cursor:crosshair;}
-    .rst-area .hover i:hover{background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--a1) 22%,transparent));}
-    .rst-stage .rst-axis{padding:0 0 20px;}
-
-    .rst-donutwrap{position:relative;width:140px;height:140px;flex:none;}
-    .rst-donutwrap svg{width:100%;height:100%;display:block;transform:rotate(-4deg);}
-    .rst-donutwrap .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;}
-    .rst-donutwrap .mid b{font-size:26px;font-weight:900;letter-spacing:-1px;line-height:1;}
-    .rst-donutwrap .mid span{font-size:10.5px;color:var(--tx2);font-weight:800;text-transform:uppercase;
-      letter-spacing:.9px;max-width:104px;text-align:center;line-height:1.25;}
-
-    /* ================= per-game colour identity ================= */
-    .rst-gcard{--hue:210;}
-    .rst-gcard .cover{background:linear-gradient(145deg,hsl(var(--hue) 62% 26%),hsl(var(--hue) 55% 12%));}
-    .rst-gcard .rank.top{background:linear-gradient(145deg,hsl(var(--hue) 85% 62%),hsl(var(--hue) 75% 45%));}
-    .rst-gcard .wash{background:linear-gradient(90deg,hsl(var(--hue) 85% 60%),hsl(var(--hue) 70% 45%));}
-    .rst-gcard:hover{border-color:hsl(var(--hue) 80% 58%);
-      box-shadow:0 20px 46px rgba(0,0,0,.55), 0 0 0 1px hsl(var(--hue) 80% 58% / .35),
-                 0 14px 50px hsl(var(--hue) 80% 50% / .28);}
-
-    /* ================= menu + palette ================= */
-    .rst-menu{position:absolute;top:76px;right:var(--pad);z-index:40;min-width:250px;background:var(--card);
-      border:1px solid var(--edge2);border-radius:20px;padding:8px;display:none;box-shadow:0 24px 60px rgba(0,0,0,.65);}
-    .rst-menu.on{display:block;}
-    .rst-menu button{display:flex;align-items:center;gap:12px;width:100%;background:none;border:none;color:var(--tx);
-      font:700 14px var(--rf);padding:12px 13px;border-radius:13px;cursor:pointer;text-align:left;}
-    .rst-menu button:hover{background:var(--card2);}
-    .rst-menu button.danger{color:var(--hot);}
-    .rst-menu hr{border:none;border-top:1px solid var(--edge);margin:7px 4px;}
-    .rst-menu svg{width:17px;height:17px;opacity:.75;flex:none;}
-
-    #rst-cmd{position:absolute;inset:0;z-index:60;background:rgba(2,3,6,.6);backdrop-filter:blur(4px);display:none;
-      align-items:flex-start;justify-content:center;padding-top:13vh;}
-    #rst-cmd.on{display:flex;}
-    #rst-cmd .box{width:min(660px,92%);background:var(--card);border:1px solid var(--edge2);border-radius:24px;
-      overflow:hidden;box-shadow:0 40px 90px rgba(0,0,0,.7);}
-    #rst-cmd input{width:100%;height:64px;background:none;border:none;border-bottom:1px solid var(--edge);
-      color:var(--tx);padding:0 24px;font:17px var(--rf);}
-    #rst-cmd input:focus{outline:none;}
-    #rst-cmd .list{max-height:380px;overflow:auto;padding:10px;}
-    #rst-cmd .row{display:flex;align-items:center;gap:13px;padding:13px 15px;border-radius:14px;cursor:pointer;font-size:14.5px;font-weight:600;}
-    #rst-cmd .row.sel{background:linear-gradient(145deg,color-mix(in srgb,var(--a1) 26%,transparent),transparent);}
-    #rst-cmd .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-    #rst-cmd .row .h{font-size:12px;color:var(--tx2);font-weight:700;}
-    #rst-cmd .row svg{width:17px;height:17px;color:var(--tx2);flex:none;}
-    #rst-cmd .none{padding:28px;text-align:center;color:var(--tx2);font-size:14px;}
-
-    #rst-diag{position:fixed;inset:0;z-index:2147483002;background:rgba(2,3,6,.82);display:none;
-      align-items:center;justify-content:center;padding:24px;}
-    #rst-diag.open{display:flex;}
-    #rst-diag .box{width:min(920px,100%);height:min(660px,100%);background:#0c0e14;border:1px solid rgba(255,255,255,.13);
-      border-radius:24px;display:flex;flex-direction:column;overflow:hidden;color:#fbfcfe;
-      --rf:"Builder Sans",system-ui,sans-serif;--tx:#fbfcfe;--tx2:#7e8a9c;--edge:rgba(255,255,255,.06);
-      --edge2:rgba(255,255,255,.13);--card:#141821;--card2:#1b202b;--a1:#00a2ff;--a2:#a077ff;--ink:#05060a;--pad:22px;
-      font:15px var(--rf);}
-    #rst-diag textarea{flex:1;background:#05060a;color:#c8ced6;border:none;padding:20px;resize:none;
-      font:12px/1.75 ui-monospace,Consolas,monospace;}
-    #rst-diag textarea:focus{outline:none;}
-    `);
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Motion and identity
-   * ------------------------------------------------------------------ */
-
-  // Each game gets a stable hue from its name, so a game looks the same every
-  // time you see it even before its cover art has loaded.
-  function gameHue(str) {
-    let h = 0;
-    for (let i = 0; i < String(str).length; i++) h = (h * 31 + String(str).charCodeAt(i)) % 360;
-    return h;
-  }
-
-  // Big numbers count up once, on first paint of a view.
-  function countUp() {
-    if (typeof requestAnimationFrame !== 'function' || !overlay) return;
-    overlay.querySelectorAll('[data-count]').forEach(el => {
-      const target = parseFloat(el.getAttribute('data-count'));
-      if (!isFinite(target) || target <= 0) return;
-      const prefix = el.getAttribute('data-prefix') || '';
-      const dur = 850, t0 = performance.now();
-      const step = now => {
-        const p = Math.min(1, (now - t0) / dur);
-        const eased = 1 - Math.pow(1 - p, 3);
-        el.textContent = prefix + fmt(target * eased);
-        if (p < 1) requestAnimationFrame(step);
-      };
-      requestAnimationFrame(step);
-    });
-  }
-
-  // Cards rise in on a short stagger — enough to feel deliberate, not slow.
-  function stagger(selector, max) {
-    if (!overlay) return;
-    const els = overlay.querySelectorAll(selector);
-    for (let i = 0; i < els.length && i < (max || 24); i++) {
-      els[i].style.animationDelay = (i * 34) + 'ms';
-      els[i].classList.add('rst-rise');
-    }
-  }
-
-  function afterRender() {
-    countUp();
-    stagger('.rst-tile', 12);
-    stagger('.rst-gcard', 24);
-    stagger('.rst-ichip', 20);
-    stagger('.rst-ms', 10);
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Charts
-   * ------------------------------------------------------------------ */
-
-  // Area chart with a gradient fill, a soft grid and month markers.
-  function areaChart(months, opts) {
-    if (months.length < 2) return '';
-    const o = opts || {};
-    const W = 1000, H = 260, pad = 6;
-    const max = Math.max(...months.map(m => m.total)) || 1;
-    const x = i => (i / (months.length - 1)) * W;
-    const y = v => H - pad - (v / max) * (H - pad * 2);
-    const line = months.map((m, i) => `${x(i).toFixed(1)},${y(m.total).toFixed(1)}`).join(' ');
-    const id = 'g' + Math.random().toString(36).slice(2, 7);
-    const peak = months.reduce((a, b, i) => b.total > months[a].total ? i : a, 0);
-
-    return `
-      <div class="rst-area">
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-          <defs>
-            <linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="var(--a1)" stop-opacity=".55"/>
-              <stop offset="100%" stop-color="var(--a1)" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-          ${[0.25, 0.5, 0.75].map(f => `<line x1="0" y1="${H * f}" x2="${W}" y2="${H * f}"
-            stroke="currentColor" stroke-opacity=".07" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('')}
-          <polygon points="0,${H} ${line} ${W},${H}" fill="url(#${id})"></polygon>
-          <polyline points="${line}" fill="none" stroke="var(--a1)" stroke-width="2.5"
-            vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"></polyline>
-          <circle cx="${x(peak)}" cy="${y(months[peak].total)}" r="4" fill="var(--a1)"
-            stroke="var(--card)" stroke-width="2" vector-effect="non-scaling-stroke"></circle>
-        </svg>
-        <div class="hover">${months.map((m, i) => `<i title="${m.date.toLocaleString(undefined, { month: 'long', year: 'numeric' })} — ${fmt(m.total)} R$"></i>`).join('')}</div>
-      </div>
-      ${o.axis === false ? '' : `<div class="rst-axis">
-        <span>${months[0].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
-        <span>peak ${months[peak].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })} · ${fmt(months[peak].total)} R$</span>
-        <span>${months[months.length - 1].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
-      </div>`}`;
-  }
-
-  // Donut with the headline number in the middle.
-  function donut(cats, total, centreLabel, centreValue) {
-    const R = 54, SW = 20, C = 2 * Math.PI * R;
-    let off = 0;
-    const rings = cats.slice(0, 6).map(([c, v]) => {
-      const len = (v / total) * C - 2;
-      const seg = `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${catColor(c)}" stroke-width="${SW}"
-        stroke-linecap="round" stroke-dasharray="${Math.max(0, len).toFixed(2)} ${(C - Math.max(0, len)).toFixed(2)}"
-        stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
-      off += (v / total) * C;
-      return seg;
-    }).join('');
-    return `<div class="rst-donutwrap">
-      <svg viewBox="0 0 140 140">${rings}</svg>
-      <div class="mid"><b>${centreValue}</b><span>${centreLabel}</span></div>
-    </div>`;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Icon rail
-   * ------------------------------------------------------------------ */
-  function renderNav() {
-    const nav = $('#rst-nav');
-    if (!nav) return;
-    nav.innerHTML = PAGES.map(p => p.grp
-      ? `<div class="rst-rdiv"></div>`
-      : `<button class="rst-nav ${ui.tab === p.id ? 'on' : ''}" data-tab="${p.id}">
-           ${ICONS[p.icon] || ICONS.pie}<span class="tip">${escapeHtml(p.label)}</span>
-         </button>`).join('');
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Dashboard — one big number, then the answers around it
-   * ------------------------------------------------------------------ */
-  function renderOverview(body) {
-    const spend = activeSpend();
-    const games = sortGames(buildGames(spend));
-    const total = games.reduce((s, g) => s + g.total, 0);
-    const months = monthly(spend);
-    const mon = tracksCurrency() ? moneyStats() : null;
-    const cmp = comparisons()[0];
-    const st = streaks();
-    const rc = reconcile();
-    const hab = habitStats();
-
-    const catTotals = new Map();
-    for (const r of spend) if (r.amount) catTotals.set(categoryOf(r.itemType), (catTotals.get(categoryOf(r.itemType)) || 0) + r.amount);
-    const cats = [...catTotals.entries()].sort((a, b) => b[1] - a[1]);
-    const top = cats[0];
-
-    const delta = cmp ? cmp.delta : 0;
-    const dcls = delta > 0.5 ? 'up' : delta < -0.5 ? 'down' : 'flat';
-    const { min } = dateRange(spend);
-
-    body.innerHTML = `
-      <section class="rst-stage">
-        <div class="glow"></div>
-        <div class="stagetop">
-          <div>
-            <div class="eyebrow">Total spent · ${rangeLabel()}</div>
-            <div class="rst-display">${robuxGlyph(28)}<span data-count="${total}">0</span></div>
-            <div class="cap">
-              <b>${fmt(spend.length)}</b> purchases across <b>${fmt(games.length)}</b> games${
-                min ? `, going back to <b>${monthYear(min)}</b>` : ''}.
-              ${mon && mon.paid ? `That's roughly <b>${moneyStr((total / Math.max(1, mon.matchedRobux)) * mon.paid)}</b>
-                of real money at the rate you actually bought Robux at.` : ''}
-            </div>
-          </div>
-          ${cats.length ? donut(cats, total, cats[0][0], ((cats[0][1] / total) * 100).toFixed(0) + '%') : ''}
-        </div>
-        ${areaChart(months)}
-      </section>
-
-      <div class="rst-tiles">
-        <div class="rst-tile accent">
-          <div class="lb">Really paid</div>
-          <div class="big money">${mon && mon.paid ? moneyStr(mon.paid) : '—'}</div>
-          <div class="sm">${mon && mon.paid
-            ? `${fmt(mon.matchedRobux)} R$ bought · ${moneyStr(mon.matchedRobux ? (mon.paid / mon.matchedRobux) * 1000 : 0)} per 1,000`
-            : 'Track Robux purchases to reconcile this'}</div>
-        </div>
-        <div class="rst-tile">
-          <div class="lb">This month</div>
-          <div class="big">${robuxGlyph(16)}${fmt(cmp ? cmp.now.total : 0)}</div>
-          <div class="sm"><span class="rst-delta ${dcls}">${delta > 0.5 ? '▲' : delta < -0.5 ? '▼' : '='} ${Math.abs(delta).toFixed(0)}%</span>
-            &nbsp;vs ${fmt(cmp ? cmp.prev.total : 0)} last month</div>
-        </div>
-        <div class="rst-tile">
-          <div class="lb">Mostly on</div>
-          <div class="big" style="font-size:24px">${top ? escapeHtml(top[0]) : '—'}</div>
-          <div class="sm">${top ? `${((top[1] / total) * 100).toFixed(0)}% of everything · ${fmt(top[1])} R$` : ''}</div>
-        </div>
-        <div class="rst-tile">
-          <div class="lb">Balance check</div>
-          <div class="big" style="font-size:24px">${rc.actual == null ? '—' : fmt(rc.actual) + ' R$'}</div>
-          <div class="sm">${rc.actual == null ? 'Open roblox.com to read it'
-            : Math.abs(rc.gap) > 50 ? `off by ${fmt(Math.abs(rc.gap))} — see Real money`
-            : 'in and out account for everything'}</div>
-        </div>
-        <div class="rst-tile">
-          <div class="lb">Streak</div>
-          <div class="big">${st ? fmt(st.best) : 0}<small style="font-size:15px;color:var(--tx2);font-weight:800">&nbsp;days</small></div>
-          <div class="sm">${st ? `${fmt(st.days)} days with a purchase` : 'No history yet'}</div>
-        </div>
-        <div class="rst-tile">
-          <div class="lb">Busiest hour</div>
-          <div class="big">${hab.hour.indexOf(Math.max(...hab.hour))}:00</div>
-          <div class="sm">when most of your Robux leaves</div>
-        </div>
-      </div>
-
-      <div class="rst-h"><h2>Where it goes</h2><span class="c">${fmt(games.length)} games</span><span class="line"></span></div>
-      <div class="rst-grid">${games.slice(0, 8).map((g, i) => gameCard(g, i, total)).join('')}</div>`;
-
-    fetchIcons(games.slice(0, 8).map(g => g.universeId)).then(paintIcons);
-  }
-
-
-  /* ------------------------------------------------------------------ *
-   * Games — cover art, not a list
-   * ------------------------------------------------------------------ */
-  function gameCard(g, i, grand) {
-    const pct = grand ? (g.total / grand) * 100 : 0;
-    const icon = g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : '';
-    const hue = gameHue(g.label);
-    return `
-      <article class="rst-gcard" data-game="${escapeHtml(g.key)}" style="--hue:${hue}">
-        <div class="cover">
-          <img data-uni="${g.universeId || ''}" src="${icon}" alt="" loading="lazy">
-          <div class="rank ${i < 3 ? 'top' : ''}">${i + 1}</div>
-          <div class="amt">
-            <b>${robuxGlyph(16)}${fmt(g.total)}</b>
-            <span>${pct.toFixed(1)}%</span>
-          </div>
-        </div>
-        <div class="meta">
-          <b>${escapeHtml(g.label)}</b>
-          <div class="s">${fmt(g.count)} buys · ${fmt(g.items.size)} items · ${ago(g.last)}</div>
-        </div>
-        <i class="wash" style="width:${Math.max(6, pct)}%"></i>
-      </article>`;
-  }
-
-  function renderGames(body) {
-    const recs = ui.cat ? activeSpend().filter(r => categoryOf(r.itemType) === ui.cat) : activeSpend();
-    const games = sortGames(buildGames(recs));
-    const shown = games.filter(g => matchesQuery(g, ui.q));
-    const grand = games.reduce((s, g) => s + g.total, 0) || 1;
-    const shownTotal = shown.reduce((s, g) => s + g.total, 0);
-
-    if (!games.length) {
-      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
-        <h3>Nothing here looks like game spending</h3>
-        <p>${fmt(state.records.length)} records are stored but none carry a Robux amount.
-        Check <b>Purchases</b> is switched on in All transactions, then rescan.</p></div>`;
-      return;
-    }
-    if (!shown.length) {
-      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
-        <h3>No matches</h3><p>Nothing matches “${escapeHtml(ui.q)}”.</p></div>`;
-      return;
-    }
-
-    const allCats = new Map();
-    for (const g of games) for (const [c, v] of g.cats) allCats.set(c, (allCats.get(c) || 0) + v);
-    const catChips = [...allCats.entries()].sort((a, b) => b[1] - a[1]);
-
-    body.innerHTML = `
-      ${catChips.length > 1 ? `<div class="rst-cats">
-        <span class="rst-type ${!ui.cat ? 'on' : ''}" data-cat="">Everything</span>
-        ${catChips.map(([c, v]) => `<span class="rst-type ${ui.cat === c ? 'on' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</span>`).join('')}
-      </div>` : ''}
-      <div class="rst-summary">${fmt(shown.length)} ${shown.length === 1 ? 'game' : 'games'} ·
-        <b>${fmt(shownTotal)} R$</b>${cfg.showUsd ? ` (about ${usd(shownTotal)})` : ''}</div>
-      <div class="rst-grid">${shown.slice(0, 240).map((g, i) => gameCard(g, i, grand)).join('')}</div>
-      ${shown.length > 240 ? `<div class="rst-note">Showing the top 240 of ${fmt(shown.length)}.</div>` : ''}`;
-
-    fetchIcons(shown.slice(0, 60).map(g => g.universeId)).then(paintIcons);
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Items — chips, then the two lists worth reading
-   * ------------------------------------------------------------------ */
-  function renderItems(body) {
-    let items = allItems(activeSpend());
-    if (ui.q) items = items.filter(i => i.name.toLowerCase().includes(ui.q) || (i.game || '').toLowerCase().includes(ui.q) || i.cat.toLowerCase().includes(ui.q));
-    items.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
-      : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
-
-    if (!items.length) { body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.tag}</div><h3>Nothing matches</h3></div>`; return; }
-
-    body.innerHTML = `
-      <div class="rst-summary">${fmt(items.length)} different things bought</div>
-      <div class="rst-ichips">
-        ${items.slice(0, 120).map(i => `
-          <div class="rst-ichip">
-            <span class="mult">×${fmt(i.count)}</span>
-            <div class="nm"><b>${escapeHtml(i.name)}</b>
-              <div class="s">${escapeHtml(i.game || i.cat)} · ${fmt(i.total / i.count)} R$ each</div></div>
-            <span class="amt">${fmt(i.total)}</span>
-          </div>`).join('')}
-      </div>
-      ${items.length > 120 ? `<div class="rst-note">Showing the top 120 of ${fmt(items.length)}.</div>` : ''}
-      ${repeatsHtml()}${biggestHtml()}`;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Creators
-   * ------------------------------------------------------------------ */
   function renderSellers(body) {
     const map = new Map();
-    for (const r of activeSpend()) {
+    for (const r of spendRecords()) {
       if (!r.amount) continue;
       const key = r.sellerId != null ? String(r.sellerId) : (r.sellerName || 'unknown');
       const e = map.get(key) || { id: r.sellerId, name: r.sellerName || 'Unknown', total: 0, count: 0, games: new Set(), last: null };
@@ -3333,359 +2007,18 @@
     sellers.sort((a, b) => ui.sort === 'count' ? b.count - a.count : ui.sort === 'recent' ? (b.last || 0) - (a.last || 0)
       : ui.sort === 'name' ? a.name.localeCompare(b.name) : b.total - a.total);
 
-    if (!sellers.length) { body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.people}</div><h3>Nothing matches</h3></div>`; return; }
-    const grand = sellers.reduce((s, x) => s + x.total, 0) || 1;
+    if (!sellers.length) { body.innerHTML = `<div class="rst-empty">Nothing matches.</div>`; return; }
 
-    body.innerHTML = `
-      <div class="rst-summary">${fmt(sellers.length)} creators and groups received your Robux</div>
-      <div class="rst-cards">
-        ${sellers.slice(0, 120).map((s, i) => `
-          <div class="rst-card">
-            <div class="t">#${i + 1} · ${fmt(s.games.size)} game${s.games.size === 1 ? '' : 's'}</div>
-            <div class="b">${escapeHtml(s.name)}</div>
-            <div class="s">${fmt(s.count)} purchases · last ${ago(s.last)}</div>
-            <div class="rst-meter"><i style="width:${Math.max(4, (s.total / grand) * 100)}%"></i></div>
-            <div class="b" style="color:var(--cash);margin:12px 0 0;font-size:24px">${fmt(s.total)} R$</div>
-          </div>`).join('')}
-      </div>`;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Records — streaks, milestones and the games you walked away from
-   * ------------------------------------------------------------------ */
-  function renderRecords(body) {
-    const st = streaks();
-    if (!st) { body.innerHTML = `<div class="rst-empty">Nothing dated to work from yet.</div>`; return; }
-    const wk = bestWeek();
-    const hab = habitStats();
-    const recs = spendRecordsSorted();
-    const firstBuy = recs[0], lastBuy = recs[recs.length - 1];
-
-    let html = `
-      <div class="rst-mini-stats" style="margin-bottom:18px">
-        ${msCard('Longest streak', `${fmt(st.best)} <small>days</small>`, st.best > 1 ? 'ending ' + dstr(st.bestEnd) : 'no back-to-back days')}
-        ${msCard('Longest quiet spell', `${fmt(st.gap)} <small>days</small>`, st.gapFrom ? dstr(st.gapFrom) + ' → ' + dstr(st.gapTo) : '')}
-        ${msCard('Days with a purchase', fmt(st.days), 'since ' + dstr(st.first))}
-        ${wk ? msCard('Biggest week', rbx(wk.total), 'from ' + dstr(wk.from)) : ''}
-        ${hab.peakDay ? msCard('Biggest day', rbx(hab.peakDay.total), dstr(hab.peakDay.date)) : ''}
-      </div>
-
-      <div class="rst-secttl"><b>Bookends</b></div>
-      <div class="rst-cards">
-        <div class="rst-card"><div class="t">First purchase on record</div>
-          <div class="b">${escapeHtml(firstBuy.itemName || firstBuy.itemType || 'Item')}</div>
-          <div class="s">${escapeHtml(firstBuy.placeName || firstBuy.sellerName || 'unknown game')} · ${dstr(firstBuy.created)} · ${fmt(firstBuy.amount)} R$</div></div>
-        <div class="rst-card"><div class="t">Most recent purchase</div>
-          <div class="b">${escapeHtml(lastBuy.itemName || lastBuy.itemType || 'Item')}</div>
-          <div class="s">${escapeHtml(lastBuy.placeName || lastBuy.sellerName || 'unknown game')} · ${dstr(lastBuy.created)} · ${fmt(lastBuy.amount)} R$</div></div>
-      </div>`;
-
-    const ms = milestones();
-    if (ms.length) {
-      html += `<div class="rst-secttl"><b>Milestones</b></div><div class="rst-timeline">`;
-      for (const m of ms) {
-        html += `<div class="rst-mile">
-          <span class="dot ${m.kind}"></span>
-          <div><b>${escapeHtml(m.label)}</b>
-            <div class="s">${dstr(m.at)}${m.where ? ' · ' + escapeHtml(m.where) : ''}</div></div>
-        </div>`;
-      }
-      html += `</div>`;
-    }
-
-    const dormant = dormantGames(180);
-    if (dormant.length) {
-      const parked = dormant.reduce((s, g) => s + g.total, 0);
-      html += `<div class="rst-secttl"><b>Gone quiet</b> — ${fmt(parked)} R$ in games you haven't bought in for 6 months</div>
-        <div class="rst-note" style="margin:0 0 10px">Not necessarily wasted — just where your money stopped moving.</div>`;
-      for (const g of dormant.slice(0, 12)) {
-        html += `
-          <div class="rst-game" data-game="${escapeHtml(g.key)}">
-            <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
-            <div class="nm"><b>${escapeHtml(g.label)}</b>
-              <div class="meta">${fmt(g.count)} purchases · last one ${ago(g.last)}</div></div>
-            <div class="amt"><b>${robuxGlyph(16)}${fmt(g.total)}</b></div>
-          </div>`;
-      }
-      fetchIcons(dormant.map(g => g.universeId)).then(paintIcons);
-    }
-
-    body.innerHTML = html;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Cumulative spend + period comparisons, appended to the Timeline tab
-   * ------------------------------------------------------------------ */
-  function cumulativeHtml() {
-    const cum = cumulative();
-    if (cum.length < 2) return '';
-    const max = cum[cum.length - 1].total || 1;
-    const W = 100, H = 100;
-    const pts = cum.map((c, i) => [(i / (cum.length - 1)) * W, H - (c.total / max) * H]);
-    const line = pts.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' ');
-    const area = `0,${H} ` + line + ` ${W},${H}`;
-
-    return `
-      <div class="rst-secttl"><b>How it added up</b></div>
-      <div class="rst-cum">
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-          <polygon points="${area}" fill="rgba(0,162,255,.18)"></polygon>
-          <polyline points="${line}" fill="none" stroke="#00a2ff" stroke-width="0.8"
-            vector-effect="non-scaling-stroke" stroke-linejoin="round"></polyline>
-        </svg>
-      </div>
-      <div class="rst-axis">
-        <span>${cum[0].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
-        <span>running total · ${fmt(max)} R$ all in</span>
-        <span>${cum[cum.length - 1].date.toLocaleString(undefined, { month: 'short', year: 'numeric' })}</span>
-      </div>`;
-  }
-
-  function compareHtml() {
-    const rows = comparisons();
-    if (!rows.some(r => r.now.total || r.prev.total)) return '';
-    const arrow = d => d > 0.5 ? `<span class="up">▲ ${Math.abs(d).toFixed(0)}%</span>`
-      : d < -0.5 ? `<span class="down">▼ ${Math.abs(d).toFixed(0)}%</span>`
-      : `<span class="flat">level</span>`;
-    return `
-      <div class="rst-secttl"><b>Then and now</b></div>
+    body.innerHTML = `<div class="rst-note" style="margin-bottom:10px">Who actually received your Robux.</div>
       <table class="rst-table">
-        <thead><tr><th>Period</th><th class="r">Now</th><th class="r">Before</th><th class="r">Change</th><th class="r">Purchases</th></tr></thead>
-        <tbody>${rows.map(r => `
-          <tr><td>${r.label}</td>
-            <td class="r g">${fmt(r.now.total)}</td>
-            <td class="r" style="color:var(--tx2)">${fmt(r.prev.total)}</td>
-            <td class="r">${arrow(r.delta)}</td>
-            <td class="r" style="color:var(--tx2)">${fmt(r.now.count)} vs ${fmt(r.prev.count)}</td></tr>`).join('')}
-        </tbody></table>`;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Balance check, shown at the top of the Money tab
-   * ------------------------------------------------------------------ */
-  function reconcileHtml() {
-    const r = reconcile();
-    if (r.actual == null) return '';
-    const off = Math.abs(r.gap) > 50;
-    return `
-      <div class="rst-recon ${off ? 'off' : 'ok'}">
-        <div class="t">${off ? 'Your balance doesn\'t line up' : 'Your balance lines up'}</div>
-        <div class="s">
-          ${fmt(r.inRobux)} R$ in − ${fmt(r.outRobux)} R$ out = <b>${fmt(r.expected)} R$</b>,
-          and Roblox currently shows <b>${fmt(r.actual)} R$</b>.
-          ${off ? `That's a gap of <b>${fmt(Math.abs(r.gap))} R$</b>${
-            r.missingTypes.length ? `, which usually means Robux arrived through something you're not tracking yet —
-            try switching on ${escapeHtml(r.missingTypes.slice(0, 3).join(', '))} in Settings.`
-            : `, which can happen when Roblox's history doesn't reach far enough back.`}`
-          : 'Everything you earned and spent is accounted for.'}
-        </div>
-      </div>`;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Money — what you actually paid, reconciled from your Robux purchases
-   * ------------------------------------------------------------------ */
-  function renderMoney(body) {
-    const reconHtml = reconcileHtml();
-    if (!tracksCurrency()) {
-      body.innerHTML = `<div class="rst-empty">
-        <div class="ico">${ICONS.logo}</div>
-        <h3>Find out what you really paid</h3>
-        <p>Your Robux purchases record the exact pack you bought each time, and pack sizes map
-           straight onto prices. Track them and this stops being an estimate — it becomes the
-           actual amount of money that left your account.</p>
-        <button class="rst-btn pri" data-act="enable-currency">Track my Robux purchases</button>
-        <div class="rst-note">Adds one more pass over your history. Same read-only access as everything else.</div>
-      </div>`;
-      return;
-    }
-
-    const m = moneyStats();
-    if (!m.rows.length) {
-      body.innerHTML = `<div class="rst-empty"><div class="ico">${ICONS.search}</div>
-        <h3>No Robux purchases found yet</h3>
-        <p>Currency purchases are switched on, but none are stored. Run
-        <b>Rescan everything</b> from the ⋯ menu to pull them in.</p></div>`;
-      return;
-    }
-
-    const spendTotal = activeSpend().reduce((s, r) => s + r.amount, 0);
-    const rate = m.matchedRobux ? (m.paid / m.matchedRobux) * 1000 : 0;
-    const spentValue = rate ? (spendTotal / 1000) * rate : 0;
-
-    let html = reconHtml + `
-      <div class="rst-money-top">
-        <div class="rst-tile accent" style="flex:1.6;min-width:320px">
-          <div class="lb">You actually paid</div>
-          <div class="big money" style="font-size:44px;letter-spacing:-2px">${moneyStr(m.paid)}</div>
-          <div class="sm">${fmt(m.matchedRobux)} R$ bought across ${fmt(m.matchedRows)} purchases${
-            m.unmatchedRobux ? ` · <b style="color:var(--warn)">${fmt(m.unmatchedRobux)} R$ unmatched</b>` : ''}</div>
-        </div>
-        <div class="rst-tiles" style="flex:2;margin:0">
-          ${tile('Your real rate', moneyStr(rate), 'per 1,000 R$')}
-          ${tile('Spent in games', fmt(spendTotal) + ' R$', rate ? 'worth ' + moneyStr(spentValue) : '')}
-          ${tile('Still unspent', fmt(Math.max(0, m.robux - spendTotal)) + ' R$', 'bought but not spent')}
-          ${tile('Top-ups', fmt(m.rows.length), 'separate Robux purchases')}
-        </div>
-      </div>`;
-
-    if (m.unknown.length) {
-      html += `<div class="rst-secttl"><b>Unmatched packs</b> — ${fmt(m.unmatchedRobux)} R$ not counted above</div>
-        <div class="rst-note" style="margin:0 0 10px">
-          These amounts don't match any pack we know — usually gift cards, promos, or prices from a
-          region or platform with different bundles. Type what you paid and it gets included everywhere.
-        </div>
-        <table class="rst-table">
-          <thead><tr><th>Robux</th><th class="r">Times</th><th class="r">What you paid, each</th></tr></thead>
-          <tbody>${m.unknown.slice(0, 40).map(u => `
-            <tr><td><b>${fmt(u.amount)} R$</b></td><td class="r">${fmt(u.count)}</td>
-              <td class="r"><input class="rst-num" type="number" min="0" step="0.01"
-                data-pack="${u.amount}" placeholder="${currencySymbol()}0.00"
-                value="${packOverrides()[u.amount] != null ? packOverrides()[u.amount] : ''}"></td></tr>`).join('')}
-          </tbody></table>`;
-    }
-
-    html += `<div class="rst-secttl"><b>Packs you bought</b></div>
-      <table class="rst-table">
-        <thead><tr><th>Pack</th><th>Matched as</th><th class="r">Times</th><th class="r">Each</th>
-          <th class="r">Total</th><th class="r">Last</th></tr></thead>
-        <tbody>${m.packs.map(p => `
-          <tr><td><b>${fmt(p.amount)} R$</b></td>
-            <td style="color:var(--tx2)">${escapeHtml(p.how)}</td>
-            <td class="r">${fmt(p.count)}</td>
-            <td class="r">${moneyStr(p.unit)}</td>
-            <td class="r g">${moneyStr(p.unit * p.count)}</td>
-            <td class="r" style="color:var(--tx2)">${dstr(p.last)}</td></tr>`).join('')}
-        </tbody></table>`;
-
-    // money paid per calendar year
-    const years = new Map();
-    for (const r of m.rows) {
-      if (!r.created) continue;
-      const y = new Date(r.created).getFullYear();
-      const price = priceForPack(r.amount);
-      const e = years.get(y) || { paid: 0, robux: 0, count: 0 };
-      if (price) e.paid += price.price;
-      e.robux += r.amount; e.count++;
-      years.set(y, e);
-    }
-    if (years.size) {
-      html += `<div class="rst-secttl"><b>By year</b></div>
-        <table class="rst-table">
-          <thead><tr><th>Year</th><th class="r">Top-ups</th><th class="r">Robux</th><th class="r">Paid</th></tr></thead>
-          <tbody>${[...years.entries()].sort((a, b) => b[0] - a[0]).map(([y, e]) => `
-            <tr><td><b>${y}</b></td><td class="r">${fmt(e.count)}</td>
-              <td class="r">${fmt(e.robux)}</td><td class="r g">${moneyStr(e.paid)}</td></tr>`).join('')}
-          </tbody></table>`;
-    }
-
-    html += `<div class="rst-note">Gift cards and promos are counted at the pack price they match.
-      Free Robux — Premium stipends, payouts, trades — is never counted as money.</div>`;
-    body.innerHTML = html;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Year in review
-   * ------------------------------------------------------------------ */
-  function renderYear(body) {
-    const years = yearsCovered();
-    if (!years.length) { body.innerHTML = `<div class="rst-empty">Nothing dated to summarise yet.</div>`; return; }
-    if (!ui.year || !years.includes(ui.year)) ui.year = years[0];
-    const y = yearReview(ui.year);
-
-    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-      'August', 'September', 'October', 'November', 'December'];
-
-    let html = `<div class="rst-yearpick">${years.map(v =>
-      `<span class="rst-type ${v === ui.year ? 'on' : ''}" data-year="${v}">${v}</span>`).join('')}</div>`;
-
-    if (!y.count) {
-      html += `<div class="rst-empty"><h3>Nothing spent in ${y.year}</h3>
-        <p>No purchases are recorded for that year.</p></div>`;
-      body.innerHTML = html;
-      return;
-    }
-
-    html += `
-      <div class="rst-wrap-hero">
-        <div class="k">In ${y.year} you spent</div>
-        <div class="v">${robuxGlyph(28)}${fmt(y.total)}</div>
-        <div class="usd">across ${fmt(y.count)} purchases in ${fmt(y.gameCount)} games${
-          y.paid ? ` · you paid <b>${moneyStr(y.paid)}</b> for Robux that year` : ''}</div>
-      </div>
-
-      <div class="rst-mini-stats" style="margin-bottom:16px">
-        ${msCard('Games', fmt(y.gameCount), y.newGames ? `${fmt(y.newGames)} new that year` : '')}
-        ${msCard('Days active', fmt(y.activeDays), 'days with a purchase')}
-        ${msCard('Per active day', rbx(y.activeDays ? y.total / y.activeDays : 0), 'average')}
-        ${y.peakMonth ? msCard('Biggest month', rbx(y.peakMonth.total), MONTHS[y.peakMonth.month]) : ''}
-        ${y.peakDay ? msCard('Biggest day', rbx(y.peakDay.total), dstr(y.peakDay.date)) : ''}
-      </div>`;
-
-    if (y.games.length) {
-      html += `<div class="rst-secttl"><b>Where it went</b></div>`;
-      y.games.forEach((g, i) => {
-        const pct = (g.total / y.total) * 100;
-        html += `
-          <div class="rst-game" data-game="${escapeHtml(g.key)}">
-            <div class="rank">${i + 1}</div>
-            <img data-uni="${g.universeId || ''}" src="${g.universeId && ui.iconCache[g.universeId] ? escapeHtml(ui.iconCache[g.universeId]) : ''}" alt="">
-            <div class="nm"><b>${escapeHtml(g.label)}</b>
-              <div class="meta">${fmt(g.count)} purchases · ${pct.toFixed(1)}% of ${y.year}</div>
-              <div class="rst-meter"><i style="width:${Math.max(2, pct)}%"></i></div></div>
-            <div class="amt"><b>${robuxGlyph(16)}${fmt(g.total)}</b></div>
-          </div>`;
-      });
-      fetchIcons(y.games.map(g => g.universeId)).then(paintIcons);
-    }
-
-    if (y.byCount || y.bySpend) {
-      html += `<div class="rst-secttl"><b>Standouts</b></div><div class="rst-cards">`;
-      if (y.byCount) html += `<div class="rst-card">
-        <div class="t">Bought most often</div>
-        <div class="b">${escapeHtml(y.byCount.name)}</div>
-        <div class="s">${fmt(y.byCount.count)} times · ${fmt(y.byCount.total)} R$ in total</div></div>`;
-      if (y.bySpend) html += `<div class="rst-card">
-        <div class="t">Took the most Robux</div>
-        <div class="b">${escapeHtml(y.bySpend.name)}</div>
-        <div class="s">${fmt(y.bySpend.total)} R$ over ${fmt(y.bySpend.count)} purchase(s)</div></div>`;
-      html += `</div>`;
-    }
-
-    body.innerHTML = html;
-  }
-
-  /* ------------------------------------------------------------------ *
-   * Habits — when the spending happens
-   * ------------------------------------------------------------------ */
-  function habitsHtml() {
-    const h = habitStats();
-    const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const maxD = Math.max(...h.dow) || 1, maxH = Math.max(...h.hour) || 1;
-    const topDay = h.dow.indexOf(maxD), topHour = h.hour.indexOf(maxH);
-
-    return `
-      <div class="rst-secttl"><b>When you spend</b></div>
-      <div class="rst-habits">
-        <div class="rst-habit">
-          <div class="t">By day of week — busiest is <b>${DAYS[topDay]}</b></div>
-          <div class="rst-chart" style="height:130px">
-            ${h.dow.map((v, i) => `<div class="bar${v ? '' : ' zero'}" style="height:${Math.max(2, (v / maxD) * 100)}%"
-              title="${DAYS[i]}: ${fmt(v)} R$ over ${fmt(h.dowCount[i])} purchases"></div>`).join('')}
-          </div>
-          <div class="rst-axis">${DAYS.map(d => `<span>${d}</span>`).join('')}</div>
-        </div>
-        <div class="rst-habit">
-          <div class="t">By hour — peak around <b>${topHour}:00</b></div>
-          <div class="rst-chart" style="height:130px">
-            ${h.hour.map((v, i) => `<div class="bar${v ? '' : ' zero'}" style="height:${Math.max(2, (v / maxH) * 100)}%"
-              title="${i}:00 — ${fmt(v)} R$"></div>`).join('')}
-          </div>
-          <div class="rst-axis"><span>00:00</span><span>12:00</span><span>23:00</span></div>
-        </div>
-      </div>
-      <div class="rst-note">${fmt(h.activeDays)} separate days with a purchase${
-        h.peakDay ? ` · heaviest single day was ${dstr(h.peakDay.date)} at ${fmt(h.peakDay.total)} R$` : ''}.</div>`;
+      <thead><tr><th>#</th><th>Seller</th><th class="r">Games</th><th class="r">Purchases</th><th class="r">Robux</th>${cfg.showUsd ? '<th class="r">≈ USD</th>' : ''}<th class="r">Last</th></tr></thead>
+      <tbody>${sellers.slice(0, 400).map((s, i) => `
+        <tr><td style="color:var(--tx2)">${i + 1}</td>
+          <td><b>${escapeHtml(s.name)}</b>${s.id ? ` <small style="color:var(--tx2)">#${s.id}</small>` : ''}</td>
+          <td class="r">${fmt(s.games.size)}</td><td class="r">${fmt(s.count)}</td>
+          <td class="r g">${fmt(s.total)}</td>${cfg.showUsd ? `<td class="r">${usd(s.total)}</td>` : ''}
+          <td class="r" style="color:var(--tx2)">${dstr(s.last)}</td></tr>`).join('')}
+      </tbody></table>`;
   }
 
   /* ------------------------------------------------------------------ *
@@ -3772,10 +2105,152 @@
    * Events
    * ------------------------------------------------------------------ */
   function closeMenu() { const m = document.getElementById('rst-menu'); if (m) m.classList.remove('on'); }
-  function openPanel() { overlay.classList.add('open'); ui.open = true; applyTheme(); go(ui.tab); }
+  function openPanel() { overlay.classList.add('open'); ui.open = true; render(); }
   function closePanel() { overlay.classList.remove('open'); ui.open = false; }
   function togglePanel() { ui.open ? closePanel() : openPanel(); }
 
+  function wireEvents() {
+    $('#rst-close').onclick = closePanel;
+    overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
+
+    $('#rst-theme-sw').addEventListener('change', e => {
+      cfg.theme = e.target.checked ? 'light' : 'dark';
+      panel.setAttribute('data-theme', cfg.theme);
+      saveCfg();
+    });
+    $('#rst-turbo').addEventListener('change', e => { cfg.turbo = e.target.checked; saveCfg(); });
+
+    // clicking anywhere else dismisses the overflow menu
+    panel.addEventListener('click', e => {
+      if (!e.target.closest('#rst-menu') && !e.target.closest('[data-act="menu"]')) closeMenu();
+    }, true);
+
+    document.addEventListener('keydown', e => {
+      if (!ui.open) return;
+      if (e.key === 'Escape') {
+        const d = document.getElementById('rst-diag');
+        const sheet = document.getElementById('rst-sheet');
+        if (d.classList.contains('open')) d.classList.remove('open');
+        else if (document.getElementById('rst-menu').classList.contains('on')) closeMenu();
+        else if (sheet.classList.contains('on')) sheet.classList.remove('on');
+        else if (ui.gameKey) { ui.gameKey = null; render(); }
+        else closePanel();
+      }
+      if (e.key === '/' && document.activeElement !== $('#rst-search')) { e.preventDefault(); $('#rst-search').focus(); }
+    });
+
+    document.getElementById('rst-diag-close').onclick = () => document.getElementById('rst-diag').classList.remove('open');
+    document.getElementById('rst-diag-copy').onclick = () => {
+      const t = $('#rst-diag-text');
+      t.select();
+      (navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject())
+        .then(() => { document.getElementById('rst-diag-copy').textContent = '✓ Copied'; })
+        .catch(() => { try { document.execCommand('copy'); } catch (e) {} });
+    };
+
+    panel.addEventListener('click', e => {
+      const actEl = e.target.closest('[data-act]');
+      if (actEl) {
+        const act = actEl.getAttribute('data-act');
+        if (act !== 'menu') closeMenu();
+        if (act === 'primary') runScan(state.records.length ? 'update' : 'full');
+        else if (act === 'menu') { const m = document.getElementById('rst-menu'); m.classList.toggle('on'); }
+        else if (act === 'settings') document.getElementById('rst-sheet').classList.add('on');
+        else if (act === 'closesheet') document.getElementById('rst-sheet').classList.remove('on');
+        else if (act === 'dismiss') clearToast();
+        else if (act === 'scan') runScan('full');
+        else if (act === 'update') runScan('update');
+        else if (act === 'resume') runScan('resume');
+        else if (act === 'pause') { state.paused = !state.paused; setButtons(); }
+        else if (act === 'stop') { state.stopped = true; setStatus('Stopping…'); }
+        else if (act === 'diag') runDiagnostics();
+        else if (act === 'csv') exportCSV();
+        else if (act === 'csv-game') exportGameCSV();
+        else if (act === 'json') exportJSON();
+        else if (act === 'copy') copyReport();
+        else if (act === 'back') { ui.gameKey = null; ui.expanded.clear(); render(); }
+        else if (act === 'clear') {
+          if (!confirm('Clear all scanned data stored in this browser?\n\nThis only deletes the local cache — nothing on your Roblox account changes.')) return;
+          state.records = []; state.ids.clear(); state.pages = 0; state.lastScan = null;
+          store.del('records'); store.del('progress'); store.del('lastScan');
+          ui.gameKey = null; render(); setStatus('Local data cleared.');
+        }
+        return;
+      }
+
+      const typeEl = e.target.closest('[data-type]');
+      if (typeEl) {
+        const id = typeEl.getAttribute('data-type');
+        const i = cfg.types.indexOf(id);
+        if (i < 0) cfg.types.push(id); else cfg.types.splice(i, 1);
+        if (!cfg.types.length) cfg.types = ['Purchase'];
+        saveCfg(); renderTypeBar(); render();
+        return;
+      }
+
+      const tabEl = e.target.closest('[data-tab]');
+      if (tabEl) {
+        ui.tab = tabEl.getAttribute('data-tab');
+        ui.gameKey = null;
+        panel.querySelectorAll('.rst-tab').forEach(t => t.classList.toggle('on', t === tabEl));
+        render();
+        return;
+      }
+
+      const itemEl = e.target.closest('[data-item]');
+      if (itemEl) {
+        const k = itemEl.getAttribute('data-item');
+        if (ui.expanded.has(k)) ui.expanded.delete(k); else ui.expanded.add(k);
+        render();
+        return;
+      }
+
+      const gameEl = e.target.closest('[data-game]');
+      if (gameEl) {
+        ui.gameKey = gameEl.getAttribute('data-game');
+        ui.expanded.clear();
+        $('#rst-body').scrollTop = 0;
+        render();
+      }
+    });
+
+    let searchTimer = null;
+    $('#rst-search').addEventListener('input', e => {
+      const raw = e.target.value.trim().toLowerCase();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(async () => {
+        ui.q = raw;
+        resolvedFilterUniverse = null;
+        const m = raw.match(/games\/(\d+)/);
+        const placeId = m ? m[1] : (/^\d{5,}$/.test(raw) ? raw : null);
+        if (placeId) {
+          const uni = await placeToUniverse(placeId);
+          if (uni) resolvedFilterUniverse = String(uni);
+        }
+        render();
+      }, 180);
+    });
+
+    $('#rst-sort').addEventListener('change', e => { ui.sort = e.target.value; render(); });
+    $('#rst-range').addEventListener('change', e => { ui.range = e.target.value; ui.gameKey = null; render(); });
+    $('#rst-delay').addEventListener('change', e => {
+      // hard floor: never let anyone dial this down to a hammering pace
+      cfg.delayMs = Math.max(MIN_DELAY_MS, Math.min(10000, parseInt(e.target.value, 10) || DEFAULTS.delayMs));
+      e.target.value = cfg.delayMs; state.curDelay = cfg.delayMs; saveCfg();
+    });
+    $('#rst-merge').addEventListener('change', e => { cfg.smartMerge = e.target.checked; saveCfg(); ui.gameKey = null; render(); });
+    $('#rst-usd').addEventListener('change', e => { cfg.showUsd = e.target.checked; saveCfg(); render(); });
+    $('#rst-premium').addEventListener('change', e => { cfg.premium = e.target.checked; saveCfg(); refreshPricingUI(); render(); });
+    $('#rst-curmode').addEventListener('change', e => { cfg.priceMode = e.target.value; saveCfg(); refreshPricingUI(); render(); });
+    $('#rst-cursym').addEventListener('change', e => { cfg.curSymbol = e.target.value; saveCfg(); refreshPricingUI(); render(); });
+    $('#rst-curper').addEventListener('change', e => {
+      const v = parseFloat(e.target.value);
+      cfg.curPer1000 = (isFinite(v) && v > 0) ? v : 9.99;
+      e.target.value = cfg.curPer1000; saveCfg(); refreshPricingUI(); render();
+    });
+    $('#rst-refpack').addEventListener('change', e => { cfg.refRobux = parseInt(e.target.value, 10) || 1000; saveCfg(); refreshPricingUI(); render(); });
+    refreshPricingUI();
+  }
 
   ready(main);
 })();

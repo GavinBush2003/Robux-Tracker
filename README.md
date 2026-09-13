@@ -11,44 +11,18 @@ It runs entirely in your browser. Nothing is uploaded anywhere.
 
 ## What it does
 
-Opens as a full app over roblox.com: a sidebar of pages, a dashboard, and a command
-palette (Ctrl+K) for jumping to any page or game.
-
-**Dashboard** — the short version at a glance: total spent with a spending sparkline,
-what you really paid, this month against last, your top games, a breakdown donut,
-balance check, current streak and your latest purchases.
-
-**Real money** — your Robux purchases record the exact pack you bought, and pack sizes map
-one-to-one onto prices, so this is reconciled from real purchases rather than estimated.
-Shows what you paid, your true rate per 1,000 R$, every pack you bought and a per-year
-breakdown. Amounts matching no known pack (gift cards, regional promos) are listed as
-unmatched and can be priced by hand — never guessed.
-
-**Balance check** — Robux in minus Robux out should equal your current balance. When it
-doesn't, the gap is named along with the transaction types you aren't tracking yet.
-
-**Games / Items / Creators** — every game ranked with icons and share-of-total, filterable
-by category; open one for the item-by-item breakdown (`Gifting VIP x44 - 35,200 R$`) and
-every individual purchase with its date. Items adds what you went back for and your
-biggest single purchases. Creators shows who actually received your Robux.
-
-**Timeline** — monthly chart, a running-total curve, then-and-now comparisons, and when you
-spend by weekday and by hour.
-
-**Records** — longest streak and longest quiet spell, biggest week and day, dated milestones
-worked out from the running total, and the games you spent in and then stopped.
-
-**Year in review** — pick a year: total, top five games, standout items, biggest day and
-month, and how many games were new to you.
-
-**All transactions** — every ledger Roblox exposes. "Find every transaction type" probes each
-one and keeps whatever your account actually has, so nothing is assumed.
-
-**Customize** — accent colour, theme (including matching Roblox's own), density, which page
-it opens on, currency and pricing basis, scan pacing, and games excluded from totals.
-
-Plus CSV/JSON export, a shareable PNG summary card, and incremental updates so only the
-first scan is slow.
+- **Per-game totals** — every game you've spent in, ranked, with icons and share-of-total.
+- **Per-item breakdown** — open a game to see `Gifting VIP ×44 — 35,200 R$`, split into
+  Game Passes / Developer Products / Private Servers / Bundles / Catalog. Click any item
+  for every individual purchase and its date.
+- **Real money values** — reads the package prices off your own Buy Robux page, so totals
+  show in your currency at your region's prices. Falls back to built-in US pricing, and
+  you can override the currency and rate by hand.
+- **Timeline** — monthly spend chart plus per-year and per-month tables.
+- **Creators** — which developers and groups actually received your Robux.
+- **Incremental updates** — the first scan reads your whole history; after that
+  "Check for new" only reads what changed.
+- **Export** — CSV or JSON, all of it or one game at a time.
 
 ## Install
 
@@ -93,9 +67,9 @@ telemetry, and no network request to anywhere other than roblox.com. See [PRIVAC
 
 - Roblox only exposes a limited window of transaction history through this API. If your
   oldest purchases are missing, they aren't available to read.
-- The **Money** tab is reconciled from real purchases and is as accurate as the pack data
-  allows. Elsewhere, Robux amounts are valued at a single reference pack (the 1,000 R$ tier
-  by default, changeable in Settings) because Robux is priced in packs, not per unit.
+- Money values are an **estimate**. Robux is priced in packs, not per unit, so the app
+  values your spend at a single reference pack (the 1,000 R$ / $9.99 tier by default).
+  You can change which pack in Settings.
 - Some purchases come back without game information. With "group by creator" on, those
   are attached to that creator's game when they only have one; such groups are labelled.
 
