@@ -1,50 +1,49 @@
-# Privacy Policy — Robux Tracker
+# Privacy policy for Robux Tracker
 
-_Last updated: 6 August 2026_
+Last updated: 31 October 2026
 
 ## The short version
 
-Robux Tracker does not collect, transmit, sell, or share any of your data. Everything it
-reads stays on your own computer. There is no server, no account, and no analytics.
+Robux Tracker does not collect, send, sell or share your data. Everything it reads stays in your own browser. There is no server, no account and no tracking.
 
-## What it accesses
+## What it reads
 
-While you are signed in to roblox.com, Robux Tracker reads:
+While you are signed in to roblox.com, the extension reads your own information from Roblox:
 
-- **Your transaction history**, from Roblox's own endpoint
-  (`economy.roblox.com/v2/users/{id}/transactions`) — the same data shown on your
-  My Transactions page.
-- **Your user id and username**, to confirm which account the data belongs to
-  (`users.roblox.com/v1/users/authenticated`).
-- **Game icons and universe ids**, so games can be shown with their thumbnail
-  (`thumbnails.roblox.com`, `apis.roblox.com`).
-- **Robux package prices**, read from the Buy Robux page you are viewing, so amounts can
-  be shown in your local currency.
+- Your transaction history and Robux balance, the same data shown on your My Transactions page
+- Your user id, username and display name, so it knows which account the data belongs to
+- Roblox's own summary totals for your account, so it can check its numbers
+- Game, item, group and avatar pictures, so things are easy to recognise
+
+It only reads. It never buys, sells, trades or changes anything on your Roblox account, and it never asks for or sees your password.
 
 ## Where it goes
 
-Nowhere. All of it is stored in your browser's local storage on your own device, and is
-only read back to render the interface. The extension makes no requests to any server
-operated by the developer or any third party — the only hosts it contacts are Roblox's.
+Nowhere. The data is saved in your browser on your own device. The only websites the extension talks to are Roblox's (roblox.com, economy.roblox.com, users.roblox.com and thumbnails.roblox.com). It does not contact any server run by the developer or anyone else.
 
-## What is stored locally
+## What is stored on your device
 
-- Your scanned purchase records
-- Your settings (theme, currency, scan pacing)
-- Cached game icon URLs and detected package prices
-- The id of the account the cache belongs to, so data from two accounts is never mixed
+- Your transaction records, for each Roblox account you use with it
+- Your settings, such as the colour theme and the Robux pack prices you enter
+- Picture links and the names of Roblox transaction types it has noticed
+- If you turn on background sync, one small setting saying how often to sync
+
+## Background sync
+
+Background sync is off by default. If you turn it on, the extension wakes up every few hours to refresh your history, only while a roblox.com tab is open.
+
+## Backups
+
+You can save a backup file or a CSV file of your data. These are saved to your own computer. Nothing is uploaded.
 
 ## Deleting your data
 
-Settings → ⋯ menu → **Delete local data** removes everything immediately. Uninstalling the
-extension also removes it. Nothing is retained anywhere else, because it was never sent
-anywhere else.
+In the extension, open Settings and choose Delete stored data, or remove an account from the Accounts tab. Uninstalling the extension also removes everything it stored.
 
-## Changes to your account
+## Not affiliated with Roblox
 
-Robux Tracker only ever reads. It does not purchase, sell, trade, modify settings, or take
-any action on your Roblox account.
+Robux Tracker is an unofficial tool and is not affiliated with, endorsed by or sponsored by Roblox Corporation. Roblox and Robux are trademarks of Roblox Corporation.
 
 ## Contact
 
-Open an issue at https://github.com/GavinBush2003/Robux-Tracker/issues
+Questions about this policy: use the support contact on the Robux Tracker page in the Chrome Web Store.

@@ -1,0 +1,19 @@
+Robux Tracker 6.2
+
+EXTENSION (recommended: sidebar item + background sync)
+ 1. Open edge://extensions or chrome://extensions and turn on Developer mode.
+ 2. Load unpacked -> choose the "extension" folder next to this file.
+ 3. Open roblox.com. "Robux Tracker" is in the left sidebar. Alt+R also opens it.
+ 4. Settings -> Advanced -> "Sync in the background every N hours" (only runs while a roblox.com tab is open).
+
+USERSCRIPT (no background sync)
+ Install Tampermonkey, make a new script, paste robux-tracker.user.js.
+
+FIRST RUN
+ - Press Sync. Then open roblox.com/transactions and click each type in the dropdown once
+   (Creator Rewards, Robux Transfers, Roblox Adjustments...). Sync again.
+ - Robux -> "Does it add up?" and Settings -> "Matches Roblox's own totals" show whether anything is missing.
+ - Settings -> Advanced -> "Save diagnostics file" to send me what Roblox really returns.
+
+Alts: sign into the alt on roblox.com and press Sync. Another browser? Backup there, Restore here.
+Nothing leaves your browser. It never asks for a password.

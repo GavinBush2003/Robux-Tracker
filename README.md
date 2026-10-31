@@ -1,82 +1,48 @@
 # Robux Tracker
 
-See where your Robux actually went.
+See where your Robux went. It reads your own Roblox transaction history and adds it up: what you spent in each game, what you bought, what you earned, and your balance.
 
-Robux Tracker reads **your own** Roblox purchase history and adds it up per game — every
-game pass, developer product and private server, and how many times you bought each one.
-It runs entirely in your browser. Nothing is uploaded anywhere.
+Everything stays in your browser. Nothing is uploaded.
 
-> Unofficial. Not affiliated with, endorsed by, or sponsored by Roblox Corporation.
-> "Roblox" and "Robux" are trademarks of Roblox Corporation.
+## What it shows
 
-## What it does
+- Spending per game and per item, with icons
+- Your Robux balance, what came in and what went out
+- Robux you bought, with the real price of each pack
+- Earnings from sales, commissions and payouts
+- Every transaction, with a running balance
+- A check that the numbers add up to your real balance, and a check against Roblox's own totals
+- More than one account, with your main and alts added together
+- Export to CSV or JSON
 
-- **Per-game totals** — every game you've spent in, ranked, with icons and share-of-total.
-- **Per-item breakdown** — open a game to see `Gifting VIP ×44 — 35,200 R$`, split into
-  Game Passes / Developer Products / Private Servers / Bundles / Catalog. Click any item
-  for every individual purchase and its date.
-- **Count from a date** — on any game, narrow every count to a date range ("how many of
-  these did I buy after March?"). Each purchase in an item's list shows its number and how
-  many came after it, and "count from here" starts the range at that exact purchase.
-  Exporting the game respects the range.
-- **Real money values** — reads the package prices off your own Buy Robux page, so totals
-  show in your currency at your region's prices. Falls back to built-in US pricing, and
-  you can override the currency and rate by hand.
-- **Timeline** — monthly spend chart plus per-year and per-month tables.
-- **Creators** — which developers and groups actually received your Robux.
-- **Incremental updates** — the first scan reads your whole history; after that
-  "Check for new" only reads what changed.
-- **Export** — CSV or JSON, all of it or one game at a time.
+It adds a "Robux Tracker" item to the Roblox sidebar. Alt+R also opens it.
 
 ## Install
 
-### As a browser extension (Chrome, Edge, Brave)
+Extension (Chrome, Edge, Brave):
+1. Open `chrome://extensions` and turn on Developer mode.
+2. Click Load unpacked and pick the `dist/extension` folder.
+3. Open roblox.com and press Robux Tracker in the left sidebar.
 
-1. Download or clone this repo.
-2. Open `chrome://extensions`, turn on **Developer mode**.
-3. Click **Load unpacked** and select the `extension/` folder.
-4. Open [roblox.com](https://www.roblox.com), find **Robux Tracker** in the left sidebar.
+Userscript: install Tampermonkey and paste in `dist/robux-tracker.user.js`.
 
-### As a userscript (Tampermonkey / Violentmonkey)
+## First run
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/).
-2. Create a new script, paste in `robux-tracker.user.js`, save.
+Press Sync. Then open roblox.com/transactions, click each type in the dropdown once, and Sync again so it learns every category.
 
-Both builds are the same code. `robux-tracker.user.js` is the source of truth;
-`node build.js` regenerates the extension copy.
+## Adding other accounts
 
-## How it works
+Sign into the other account on roblox.com and press Sync. It is added automatically. Using a different browser? Press Backup there and Restore backup here.
 
-It calls the same endpoint the Roblox website itself uses to render your Transactions
-page — `economy.roblox.com/v2/users/{id}/transactions` — reading one page of 100 at a
-time with your existing session, and pages through with the cursor Roblox returns.
+## Build and test
 
-Being deliberate about pacing:
+```
+node build.js
+node test/run.mjs
+```
 
-- A **400 ms floor** between requests that the UI cannot go below.
-- `retry-after` is honoured; HTTP 429 triggers exponential backoff, and that backoff is
-  never written back into your saved settings.
-- Parallel paging is **off by default**, capped at 3 pages at once when enabled.
-- It stops itself if a cursor repeats or several pages arrive with nothing new, rather
-  than looping forever.
+`build.js` joins the files in `src/` into `dist/`. The tests run in a hidden Edge window against a fake Roblox server.
 
-Nothing is written to your account. Every request is a read.
+Unofficial. Not affiliated with Roblox Corporation. Roblox and Robux are trademarks of Roblox Corporation.
 
-## Privacy
-
-All data stays in your browser's local storage. There is no server, no analytics, no
-telemetry, and no network request to anywhere other than roblox.com. See [PRIVACY.md](PRIVACY.md).
-
-## Notes on accuracy
-
-- Roblox only exposes a limited window of transaction history through this API. If your
-  oldest purchases are missing, they aren't available to read.
-- Money values are an **estimate**. Robux is priced in packs, not per unit, so the app
-  values your spend at a single reference pack (the 1,000 R$ / $9.99 tier by default).
-  You can change which pack in Settings.
-- Some purchases come back without game information. With "group by creator" on, those
-  are attached to that creator's game when they only have one; such groups are labelled.
-
-## Licence
-
-MIT — see [LICENSE](LICENSE).
+MIT licence.

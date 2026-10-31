@@ -1,13 +1,11 @@
-The extension shows users a breakdown of their own Roblox spending, so it reads that data from Roblox's own APIs while the user is signed in.
+alarms: Used for an optional background sync. If the user turns it on in the extension's settings, an alarm wakes the extension every few hours to refresh the user's own Robux transaction history while a roblox.com tab is open. It is off by default and does nothing otherwise.
 
-economy.roblox.com - reads the user's own transaction history, the same data shown on their My Transactions page. This is the extension's core function.
+storage: Saves one small setting (whether background sync is on and how often) so the extension's background script can read it. No transaction data or personal data is stored with this permission.
 
-users.roblox.com - confirms which account is signed in, so cached results are never mixed between two accounts.
+Host permissions:
+economy.roblox.com - reads the user's own transaction history and Robux balance. This is the extension's core function.
+users.roblox.com - confirms which account is signed in, so saved results are never mixed between accounts.
+thumbnails.roblox.com - fetches game, item and avatar icons.
+www.roblox.com and web.roblox.com (content script) - adds the Robux Tracker entry to the Roblox sidebar and shows the panel on the page.
 
-thumbnails.roblox.com - fetches game icons so each game is recognisable in the list.
-
-apis.roblox.com - resolves a place ID to its universe ID so purchases group under the correct game.
-
-www.roblox.com (content script) - adds the panel and sidebar entry to the Roblox interface, and reads the Robux package prices on the user's own Buy Robux page so amounts show in their local currency.
-
-Every request is a read using the user's existing session. Nothing is written to the account, no data leaves the device, and all results are stored in local storage only.
+Everything is stored locally in the user's browser. Nothing is sent anywhere except these Roblox requests, and the extension only reads data.
